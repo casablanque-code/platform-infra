@@ -1,0 +1,23 @@
+{
+  "id": "postgres",
+  "name": "PostgreSQL",
+  "description": "Provision a managed-like PostgreSQL environment backed by infrastructure automation.",
+  "category": "database",
+  "providers": ["oracle", "hetzner"],
+  "default_region": "eu-frankfurt",
+  "default_ttl_hours": 72,
+  "inputs": [
+    {
+      "name": "name",
+      "label": "Database environment name",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "region",
+      "label": "Region",
+      "type": "string",
+      "required": true
+    }
+  ]
+}

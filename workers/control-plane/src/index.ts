@@ -15,19 +15,48 @@ type Env = {
   GITHUB_REF: string;
 };
 
+type PlatformTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  providers: string[];
+  default_region: string;
+  default_ttl_hours: number;
+};
+
+const templates: PlatformTemplate[] = [
+  {
+    id: "docker-host",
+    name: "Docker Host",
+    description: "Provision an Ubuntu VM prepared for Docker workloads.",
+    category: "compute",
+    providers: ["oracle", "hetzner"],
+    default_region: "eu-frankfurt",
+    default_ttl_hours: 72,
+  },
+  {
+    id: "postgres",
+    name: "PostgreSQL",
+    description: "Provision a managed-like PostgreSQL environment backed by infrastructure automation.",
+    category: "database",
+    providers: ["oracle", "hetzner"],
+    default_region: "eu-frankfurt",
+    default_ttl_hours: 72,
+  },
+];
+
 const app = new Hono<{ Bindings: Env }>();
 
 app.use("*", cors());
 
-function isAuthorized(
-  authHeader: string | undefined,
-  token: string
-) {
-  if (!authHeader) {
-    return false;
-  }
-
+function isAuthorized(authHeader: string | undefined, token: string) {
+  if (!authHeader) return false;
   return authHeader === `Bearer ${token}`;
+}
+
+function findTemplate(id: string) {
+  return templates.find((template) => template.id === id);
 }
 
 async function addDeploymentEvent(
@@ -64,6 +93,10 @@ app.get("/api/health", (c) => {
     ok: true,
     service: "platform-control-plane",
   });
+});
+
+app.get("/api/templates", (c) => {
+  return c.json(templates);
 });
 
 app.get("/api/environments", async (c) => {
@@ -108,6 +141,23 @@ app.post("/api/environments", async (c) => {
     ttl_hours?: number;
   }>();
 
+  const template = findTemplate(body.template);
+
+  if (!template) {
+    return c.json({
+      error: "unknown template",
+      template: body.template,
+    }, 400);
+  }
+
+  if (!template.providers.includes(body.provider)) {
+    return c.json({
+      error: "provider is not supported by template",
+      template: body.template,
+      provider: body.provider,
+    }, 400);
+  }
+
   const envId = crypto.randomUUID();
   const deploymentId = crypto.randomUUID();
 
@@ -131,10 +181,10 @@ app.post("/api/environments", async (c) => {
       envId,
       body.name,
       body.provider,
-      body.region,
+      body.region || template.default_region,
       body.template,
       "queued",
-      body.ttl_hours ?? 72,
+      body.ttl_hours ?? template.default_ttl_hours,
       now,
       now
     )
@@ -166,7 +216,7 @@ app.post("/api/environments", async (c) => {
     deploymentId,
     envId,
     "queued",
-    "Deployment queued by control plane"
+    `Deployment queued by control plane using template ${template.id}`
   );
 
   return c.json({
@@ -294,9 +344,7 @@ app.post("/api/deployments/:id/event", async (c) => {
   const authHeader = c.req.header("Authorization");
 
   if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
-    return c.json({
-      error: "unauthorized",
-    }, 401);
+    return c.json({ error: "unauthorized" }, 401);
   }
 
   const id = c.req.param("id");
@@ -315,9 +363,7 @@ app.post("/api/deployments/:id/event", async (c) => {
     .first();
 
   if (!deployment) {
-    return c.json({
-      error: "deployment not found",
-    }, 404);
+    return c.json({ error: "deployment not found" }, 404);
   }
 
   await addDeploymentEvent(
@@ -328,18 +374,14 @@ app.post("/api/deployments/:id/event", async (c) => {
     body.message
   );
 
-  return c.json({
-    ok: true,
-  });
+  return c.json({ ok: true });
 });
 
 app.post("/api/deployments/:id/complete", async (c) => {
   const authHeader = c.req.header("Authorization");
 
   if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
-    return c.json({
-      error: "unauthorized",
-    }, 401);
+    return c.json({ error: "unauthorized" }, 401);
   }
 
   const id = c.req.param("id");
@@ -353,9 +395,7 @@ app.post("/api/deployments/:id/complete", async (c) => {
     .first();
 
   if (!deployment) {
-    return c.json({
-      error: "deployment not found",
-    }, 404);
+    return c.json({ error: "deployment not found" }, 404);
   }
 
   const envId = deployment.environment_id as string;
