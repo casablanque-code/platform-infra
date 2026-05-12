@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "platform-control-plane",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-12",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "platform_infra",
+      "database_id": "local-dev"
+    }
+  ],
+  "vars": {
+    "GITHUB_OWNER": "casablanque-code",
+    "GITHUB_REPO": "platform-infra",
+    "GITHUB_WORKFLOW": "provision.yml",
+    "GITHUB_REF": "main"
+  }
+}

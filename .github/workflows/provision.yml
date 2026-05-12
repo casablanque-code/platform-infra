@@ -1,0 +1,65 @@
+name: Provision Environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_id:
+        description: "Deployment ID"
+        required: true
+        type: string
+      environment_id:
+        description: "Environment ID"
+        required: true
+        type: string
+      environment_name:
+        description: "Environment name"
+        required: true
+        type: string
+      provider:
+        description: "Cloud provider"
+        required: true
+        type: string
+      region:
+        description: "Cloud region"
+        required: true
+        type: string
+      template:
+        description: "Platform template"
+        required: true
+        type: string
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Mark deployment as provisioning
+        run: |
+          curl -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/event" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
+            -d '{"type":"github_actions_started","message":"GitHub Actions executor started"}'
+
+      - name: Fake OpenTofu apply
+        run: |
+          echo "Provisioning environment:"
+          echo "deployment_id=${{ inputs.deployment_id }}"
+          echo "environment_id=${{ inputs.environment_id }}"
+          echo "environment_name=${{ inputs.environment_name }}"
+          echo "provider=${{ inputs.provider }}"
+          echo "region=${{ inputs.region }}"
+          echo "template=${{ inputs.template }}"
+          sleep 5
+
+      - name: Fake Ansible configure
+        run: |
+          echo "Configuring host with Ansible..."
+          sleep 3
+
+      - name: Complete deployment
+        run: |
+          curl -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/complete" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}"

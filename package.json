@@ -1,0 +1,19 @@
+{
+  "name": "platform-infra",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Edge-native infrastructure control plane",
+  "workspaces": [
+    "apps/*",
+    "workers/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm --workspace workers/control-plane run dev",
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:dashboard\"",
+    "dev:dashboard": "npm --workspace apps/dashboard run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
