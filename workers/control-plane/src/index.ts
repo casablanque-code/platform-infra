@@ -4,6 +4,8 @@ import { cors } from "hono/cors";
 type Env = {
   DB: D1Database;
 
+  ASSETS: Fetcher;
+
   GITHUB_TOKEN: string;
   CALLBACK_TOKEN: string;
 
@@ -240,6 +242,7 @@ app.post("/api/deployments/process", async (c) => {
         Authorization: `Bearer ${c.env.GITHUB_TOKEN}`,
         Accept: "application/vnd.github+json",
         "Content-Type": "application/json",
+        "User-Agent": "platform-infra-control-plane",
       },
       body: JSON.stringify({
         ref: c.env.GITHUB_REF,
@@ -257,22 +260,6 @@ app.post("/api/deployments/process", async (c) => {
 
   if (!response.ok) {
     const errorText = await response.text();
-
-    await c.env.DB.prepare(`
-      UPDATE deployments
-      SET status = 'failed'
-      WHERE id = ?
-    `)
-      .bind(deploymentId)
-      .run();
-
-    await c.env.DB.prepare(`
-      UPDATE environments
-      SET status = 'failed'
-      WHERE id = ?
-    `)
-      .bind(envId)
-      .run();
 
     await addDeploymentEvent(
       c.env.DB,
@@ -405,73 +392,8 @@ app.post("/api/deployments/:id/complete", async (c) => {
   });
 });
 
-app.post("/api/deployments/:id/fail", async (c) => {
-  const authHeader = c.req.header("Authorization");
-
-  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
-    return c.json({
-      error: "unauthorized",
-    }, 401);
-  }
-
-  const id = c.req.param("id");
-
-  let body: { message?: string } = {};
-
-  try {
-    body = await c.req.json();
-  } catch {
-    body = {
-      message: "Deployment failed",
-    };
-  }
-
-  const deployment = await c.env.DB.prepare(`
-    SELECT *
-    FROM deployments
-    WHERE id = ?
-  `)
-    .bind(id)
-    .first();
-
-  if (!deployment) {
-    return c.json({
-      error: "deployment not found",
-    }, 404);
-  }
-
-  const envId = deployment.environment_id as string;
-
-  await c.env.DB.prepare(`
-    UPDATE deployments
-    SET status = 'failed',
-        finished_at = ?
-    WHERE id = ?
-  `)
-    .bind(new Date().toISOString(), id)
-    .run();
-
-  await c.env.DB.prepare(`
-    UPDATE environments
-    SET status = 'failed',
-        updated_at = ?
-    WHERE id = ?
-  `)
-    .bind(new Date().toISOString(), envId)
-    .run();
-
-  await addDeploymentEvent(
-    c.env.DB,
-    id,
-    envId,
-    "failed",
-    body.message ?? "Deployment failed"
-  );
-
-  return c.json({
-    ok: true,
-    status: "failed",
-  });
+app.notFound(async (c) => {
+  return c.env.ASSETS.fetch(c.req.raw);
 });
 
 export default app;

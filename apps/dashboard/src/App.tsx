@@ -27,7 +27,8 @@ type DeploymentEvent = {
   created_at: string;
 };
 
-const API = "https://platform-control-plane.casablanque.workers.dev";
+//const API = "https://platform-control-plane.casablanque.workers.dev";
+const API = window.location.origin;
 
 export default function App() {
   const [environments, setEnvironments] = useState<Environment[]>([]);
@@ -36,6 +37,18 @@ export default function App() {
 
   const [selectedDeployment, setSelectedDeployment] =
     useState<string | null>(null);
+    useEffect(() => {
+      if (
+        deployments.length > 0 &&
+        !selectedDeployment
+      ) {
+        const latest = deployments[0];
+    
+        setSelectedDeployment(latest.id);
+    
+        loadEvents(latest.id);
+      }
+    }, [deployments]);
 
   const [form, setForm] = useState({
     name: "",
