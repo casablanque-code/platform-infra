@@ -27,7 +27,7 @@ type DeploymentEvent = {
   created_at: string;
 };
 
-const API = "http://localhost:8787";
+const API = "https://platform-control-plane.casablanque.workers.dev";
 
 export default function App() {
   const [environments, setEnvironments] = useState<Environment[]>([]);

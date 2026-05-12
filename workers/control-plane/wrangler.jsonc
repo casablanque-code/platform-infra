@@ -1,19 +1,25 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "platform-control-plane",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-05-12",
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "platform_infra",
-      "database_id": "local-dev"
-    }
-  ],
-  "vars": {
-    "GITHUB_OWNER": "casablanque-code",
-    "GITHUB_REPO": "platform-infra",
-    "GITHUB_WORKFLOW": "provision.yml",
-    "GITHUB_REF": "main"
-  }
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "platform-control-plane",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-05-12",
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "platform_infra",
+			"database_id": "20202c9a-7c86-4d2d-9713-d25730e96ae6"
+		},
+		{
+			"binding": "platform_infra",
+			"database_name": "platform_infra",
+			"database_id": "20202c9a-7c86-4d2d-9713-d25730e96ae6",
+			"remote": true
+		}
+	],
+	"vars": {
+		"GITHUB_OWNER": "casablanque-code",
+		"GITHUB_REPO": "platform-infra",
+		"GITHUB_WORKFLOW": "provision.yml",
+		"GITHUB_REF": "main"
+	}
 }
