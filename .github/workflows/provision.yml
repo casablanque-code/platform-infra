@@ -4,27 +4,26 @@ on:
   workflow_dispatch:
     inputs:
       deployment_id:
-        description: "Deployment ID"
         required: true
         type: string
+
       environment_id:
-        description: "Environment ID"
         required: true
         type: string
+
       environment_name:
-        description: "Environment name"
         required: true
         type: string
+
       provider:
-        description: "Cloud provider"
         required: true
         type: string
+
       region:
-        description: "Cloud region"
         required: true
         type: string
+
       template:
-        description: "Platform template"
         required: true
         type: string
 
@@ -33,31 +32,66 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Mark deployment as provisioning
+      - name: Install OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: latest
+
+      - name: Notify executor started
         run: |
           curl -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/event" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
             -d '{"type":"github_actions_started","message":"GitHub Actions executor started"}'
 
-      - name: Fake OpenTofu apply
+      - name: Resolve runtime manifest
+        id: runtime
         run: |
-          echo "Provisioning environment:"
-          echo "deployment_id=${{ inputs.deployment_id }}"
-          echo "environment_id=${{ inputs.environment_id }}"
-          echo "environment_name=${{ inputs.environment_name }}"
-          echo "provider=${{ inputs.provider }}"
-          echo "region=${{ inputs.region }}"
-          echo "template=${{ inputs.template }}"
-          sleep 5
+          TEMPLATE_PATH="templates/${{ inputs.template }}"
+          RUNTIME_FILE="$TEMPLATE_PATH/runtime.json"
 
-      - name: Fake Ansible configure
+          echo "runtime_file=$RUNTIME_FILE" >> $GITHUB_OUTPUT
+
+          MODULE_PATH=$(jq -r '.executor.module_path' "$RUNTIME_FILE")
+
+          echo "module_path=$MODULE_PATH" >> $GITHUB_OUTPUT
+
+      - name: Notify runtime resolved
         run: |
-          echo "Configuring host with Ansible..."
-          sleep 3
+          curl -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/event" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
+            -d '{"type":"runtime_resolved","message":"Template runtime resolved"}'
+
+      - name: OpenTofu init
+        working-directory: ${{ steps.runtime.outputs.module_path }}
+        run: |
+          tofu init
+
+      - name: OpenTofu apply
+        working-directory: ${{ steps.runtime.outputs.module_path }}
+        run: |
+          tofu apply -auto-approve
+
+      - name: Capture outputs
+        id: outputs
+        working-directory: ${{ steps.runtime.outputs.module_path }}
+        run: |
+          tofu output -json > outputs.json
+
+          cat outputs.json
+
+      - name: Upload outputs to control plane
+        working-directory: ${{ steps.runtime.outputs.module_path }}
+        run: |
+          curl -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/outputs" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
+            --data @outputs.json
 
       - name: Complete deployment
         run: |
