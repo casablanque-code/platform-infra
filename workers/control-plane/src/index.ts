@@ -244,8 +244,8 @@ app.post("/api/environments", async (c) => {
   });
 });
 
-app.post("/api/deployments/process", async (c) => {
-  const queued = await c.env.DB.prepare(`
+async function processDeploymentQueue(env: Env) {
+  const queued = await env.DB.prepare(`
     SELECT *
     FROM deployments
     WHERE status = 'queued'
@@ -254,16 +254,16 @@ app.post("/api/deployments/process", async (c) => {
   `).first();
 
   if (!queued) {
-    return c.json({
+    return {
       ok: true,
       message: "no queued deployments",
-    });
+    };
   }
 
   const deploymentId = queued.id as string;
   const envId = queued.environment_id as string;
 
-  const environment = await c.env.DB.prepare(`
+  const environment = await env.DB.prepare(`
     SELECT *
     FROM environments
     WHERE id = ?
@@ -272,12 +272,12 @@ app.post("/api/deployments/process", async (c) => {
     .first();
 
   if (!environment) {
-    return c.json({
+    return {
       error: "environment not found",
-    }, 404);
+    };
   }
 
-  await c.env.DB.prepare(`
+  await env.DB.prepare(`
     UPDATE deployments
     SET status = 'dispatching'
     WHERE id = ?
@@ -285,7 +285,7 @@ app.post("/api/deployments/process", async (c) => {
     .bind(deploymentId)
     .run();
 
-  await c.env.DB.prepare(`
+  await env.DB.prepare(`
     UPDATE environments
     SET status = 'dispatching',
         updated_at = ?
@@ -295,7 +295,7 @@ app.post("/api/deployments/process", async (c) => {
     .run();
 
   await addDeploymentEvent(
-    c.env.DB,
+    env.DB,
     deploymentId,
     envId,
     "dispatching",
@@ -303,17 +303,20 @@ app.post("/api/deployments/process", async (c) => {
   );
 
   const response = await fetch(
-    `https://api.github.com/repos/${c.env.GITHUB_OWNER}/${c.env.GITHUB_REPO}/actions/workflows/${c.env.GITHUB_WORKFLOW}/dispatches`,
+    `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/${env.GITHUB_WORKFLOW}/dispatches`,
     {
       method: "POST",
+
       headers: {
-        Authorization: `Bearer ${c.env.GITHUB_TOKEN}`,
+        Authorization: `Bearer ${env.GITHUB_TOKEN}`,
         Accept: "application/vnd.github+json",
         "Content-Type": "application/json",
         "User-Agent": "platform-infra-control-plane",
       },
+
       body: JSON.stringify({
-        ref: c.env.GITHUB_REF,
+        ref: env.GITHUB_REF,
+
         inputs: {
           deployment_id: deploymentId,
           environment_id: envId,
@@ -330,32 +333,38 @@ app.post("/api/deployments/process", async (c) => {
     const errorText = await response.text();
 
     await addDeploymentEvent(
-      c.env.DB,
+      env.DB,
       deploymentId,
       envId,
       "dispatch_failed",
       errorText
     );
 
-    return c.json({
+    return {
       error: "workflow dispatch failed",
       details: errorText,
-    }, 500);
+    };
   }
 
   await addDeploymentEvent(
-    c.env.DB,
+    env.DB,
     deploymentId,
     envId,
     "workflow_dispatched",
     "GitHub Actions workflow dispatched"
   );
 
-  return c.json({
+  return {
     ok: true,
     deployment_id: deploymentId,
     status: "dispatching",
-  });
+  };
+}
+
+app.post("/api/deployments/process", async (c) => {
+  const result = await processDeploymentQueue(c.env);
+
+  return c.json(result);
 });
 
 app.post("/api/deployments/:id/event", async (c) => {
@@ -529,29 +538,11 @@ export default {
     env: Env,
     ctx: ExecutionContext
   ) {
-    const queued = await env.DB.prepare(`
-      SELECT *
-      FROM deployments
-      WHERE status = 'queued'
-      ORDER BY created_at ASC
-      LIMIT 1
-    `).first();
-
-    if (!queued) {
-      return;
-    }
-
-    const deploymentId = queued.id as string;
-
-    await fetch(
-      "https://platform-control-plane.casablanque.workers.dev/api/deployments/process",
-      {
-        method: "POST",
-      }
-    );
-
+    const result = await processDeploymentQueue(env);
+  
     console.log(
-      `scheduler dispatched deployment ${deploymentId}`
+      "scheduler tick",
+      JSON.stringify(result)
     );
-  },
+  }
 };
