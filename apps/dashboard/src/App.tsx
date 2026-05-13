@@ -51,7 +51,7 @@ export default function App() {
 
   const [events, setEvents] = useState<DeploymentEvent[]>([]);
 
-  const [outputs, setOutputs] = useState<EnvironmentOutput[]>([]);
+  const [, setOutputs] = useState<EnvironmentOutput[]>([]);
 
   const [selectedDeployment, setSelectedDeployment] =
     useState<string | null>(null);
