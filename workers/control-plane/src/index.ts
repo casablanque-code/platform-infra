@@ -132,6 +132,24 @@ app.get("/api/deployments/:id/events", async (c) => {
   return c.json(result.results);
 });
 
+app.get("/api/environments/:id/outputs", async (c) => {
+  const id = c.req.param("id");
+
+  const result = await c.env.DB.prepare(`
+    SELECT
+      output_key,
+      output_value,
+      created_at
+    FROM deployment_outputs
+    WHERE environment_id = ?
+    ORDER BY created_at DESC
+  `)
+    .bind(id)
+    .all();
+
+  return c.json(result.results);
+});
+
 app.post("/api/environments", async (c) => {
   const body = await c.req.json<{
     name: string;
