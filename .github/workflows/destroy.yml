@@ -1,0 +1,78 @@
+name: Destroy Environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_id:
+        required: true
+        type: string
+
+      environment_id:
+        required: true
+        type: string
+
+      environment_name:
+        required: true
+        type: string
+
+      provider:
+        required: true
+        type: string
+
+      template:
+        required: true
+        type: string
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: latest
+
+      - name: Notify destroy started
+        run: |
+          curl -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/event" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
+            -d '{"type":"destroy_started","message":"Destroy workflow started"}'
+
+      - name: Resolve runtime manifest
+        id: runtime
+        run: |
+          TEMPLATE_PATH="templates/${{ inputs.template }}"
+          RUNTIME_FILE="$TEMPLATE_PATH/runtime.json"
+
+          MODULE_PATH=$(jq -r '.executor.module_path' "$RUNTIME_FILE")
+
+          echo "module_path=$MODULE_PATH" >> $GITHUB_OUTPUT
+
+      - name: Generate tfvars
+        working-directory: ${{ steps.runtime.outputs.module_path }}
+        run: |
+          jq '.runtime.tfvars' \
+            "../../../providers/${{ inputs.provider }}/provider.json" \
+            > terraform.tfvars.json
+
+          cat terraform.tfvars.json
+
+      - name: OpenTofu init
+        working-directory: ${{ steps.runtime.outputs.module_path }}
+        run: |
+          tofu init
+
+      - name: OpenTofu destroy
+        working-directory: ${{ steps.runtime.outputs.module_path }}
+        run: |
+          tofu destroy -auto-approve
+
+      - name: Complete destroy
+        run: |
+          curl -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/destroy-complete" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}"

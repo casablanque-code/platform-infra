@@ -12,6 +12,7 @@ type Env = {
   GITHUB_OWNER: string;
   GITHUB_REPO: string;
   GITHUB_WORKFLOW: string;
+  GITHUB_DESTROY_WORKFLOW: string;
   GITHUB_REF: string;
 };
 

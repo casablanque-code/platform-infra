@@ -27,6 +27,7 @@
     "GITHUB_OWNER": "casablanque-code",
     "GITHUB_REPO": "platform-infra",
     "GITHUB_WORKFLOW": "provision.yml",
+    "GITHUB_DESTROY_WORKFLOW": "destroy.yml",
     "GITHUB_REF": "main"
   }
 }
