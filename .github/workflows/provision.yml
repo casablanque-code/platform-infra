@@ -60,6 +60,24 @@ jobs:
 
           echo "module_path=$MODULE_PATH" >> $GITHUB_OUTPUT
 
+            - name: Resolve provider runtime
+        id: provider
+        run: |
+          PROVIDER_FILE="providers/${{ inputs.provider }}/provider.json"
+
+          echo "provider_file=$PROVIDER_FILE" >> $GITHUB_OUTPUT
+
+          cat "$PROVIDER_FILE"
+
+      - name: Generate tfvars
+        working-directory: ${{ steps.runtime.outputs.module_path }}
+        run: |
+          jq '.runtime.tfvars' \
+            "../../../providers/${{ inputs.provider }}/provider.json" \
+            > terraform.tfvars.json
+
+          cat terraform.tfvars.json    
+
       - name: Notify runtime resolved
         run: |
           curl -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/event" \
