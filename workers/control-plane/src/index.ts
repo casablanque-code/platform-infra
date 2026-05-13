@@ -566,6 +566,50 @@ async function reconcileExpiredEnvironments(env: Env) {
   };
 }
 
+async function reconcileStuckDeployments(env: Env) {
+  const result = await env.DB.prepare(`
+    SELECT *
+    FROM deployments
+    WHERE status = 'dispatching'
+  `).all();
+
+  const now = Date.now();
+
+  for (const item of result.results as any[]) {
+    const createdAt = new Date(
+      item.created_at as string
+    ).getTime();
+
+    const ageMinutes =
+      (now - createdAt) / 1000 / 60;
+
+    if (ageMinutes < 5) {
+      continue;
+    }
+
+    await env.DB.prepare(`
+      UPDATE deployments
+      SET status = 'queued'
+      WHERE id = ?
+    `)
+      .bind(item.id)
+      .run();
+
+    await addDeploymentEvent(
+      env.DB,
+      item.id,
+      item.environment_id,
+      "requeued",
+      "Deployment requeued by recovery controller"
+    );
+  }
+
+  return {
+    ok: true,
+    checked: result.results.length,
+  };
+}
+
 app.post("/api/deployments/process", async (c) => {
   const result = await processDeploymentQueue(c.env);
 
@@ -808,6 +852,14 @@ export default {
       "ttl reconcile",
       JSON.stringify(reconcileResult)
     );
+
+    const recoveryResult =
+  await reconcileStuckDeployments(env);
+
+console.log(
+  "deployment recovery",
+  JSON.stringify(recoveryResult)
+);
   
     const queueResult = await processDeploymentQueue(env);
   
