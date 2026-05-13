@@ -1,0 +1,13 @@
+{
+  "template_id": "docker-host",
+
+  "executor": {
+    "type": "opentofu",
+    "module_path": "templates/docker-host/tofu"
+  },
+
+  "outputs": [
+    "public_ip",
+    "private_ip"
+  ]
+}

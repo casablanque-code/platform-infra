@@ -1,0 +1,13 @@
+{
+  "template_id": "postgres",
+
+  "executor": {
+    "type": "opentofu",
+    "module_path": "templates/postgres/tofu"
+  },
+
+  "outputs": [
+    "db_host",
+    "db_port"
+  ]
+}
