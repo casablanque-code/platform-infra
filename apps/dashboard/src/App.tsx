@@ -341,7 +341,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="border border-neutral-800 rounded-2xl p-6 bg-neutral-950">
+          <div className="border border-neutral-800 rounded-2xl p-6 bg-neutral-950 max-h-[85vh] overflow-y-auto">
 
             <h2 className="text-xl font-semibold mb-6">
               Deployment Timeline
@@ -371,21 +371,45 @@ export default function App() {
                       : "border-neutral-800 hover:border-neutral-700"
                   }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="font-semibold">
-                        {deployment.environment_name}
-                      </h3>
+<div className="flex items-start justify-between gap-4">
 
-                      <p className="text-xs text-neutral-500 mt-1 break-all">
-                        {deployment.id}
-                      </p>
-                    </div>
+<div className="min-w-0">
 
-                    <span className="text-xs uppercase border border-neutral-700 rounded-full px-2 py-1">
-                      {deployment.status}
-                    </span>
-                  </div>
+  <div className="flex items-center gap-2 flex-wrap">
+
+    <h3 className="font-semibold break-all">
+      {deployment.environment_name}
+    </h3>
+
+    <span
+      className={`text-[10px] uppercase rounded-full px-2 py-1 border ${
+        deployment.status.includes("destroy")
+          ? "border-yellow-800 text-yellow-400"
+          : "border-emerald-800 text-emerald-400"
+      }`}
+    >
+      {deployment.status.includes("destroy")
+        ? "destroy"
+        : "deploy"}
+    </span>
+
+  </div>
+
+  <p className="text-xs text-neutral-500 mt-2 break-all">
+    {deployment.id}
+  </p>
+
+  <p className="text-xs text-neutral-600 mt-1">
+    {deployment.provider}
+  </p>
+
+</div>
+
+<span className="text-xs uppercase border border-neutral-700 rounded-full px-2 py-1 shrink-0">
+  {deployment.status}
+</span>
+
+</div>
                 </button>
               ))}
 
@@ -405,13 +429,13 @@ export default function App() {
       {outputs.map((output) => (
         <div
           key={output.output_key}
-          className="flex items-center justify-between border-b border-neutral-900 pb-2"
+          className="flex items-start justify-between gap-4 border-b border-neutral-900 pb-2 overflow-hidden"
         >
           <span className="text-sm text-neutral-400">
             {output.output_key}
           </span>
 
-          <code className="text-sm text-white">
+          <code className="text-sm text-white break-all text-right">
             {output.output_value.replaceAll('"', "")}
           </code>
         </div>
@@ -425,7 +449,7 @@ export default function App() {
                   {events.map((event) => (
                     <div
                       key={event.id}
-                      className="border-l border-neutral-700 pl-4"
+                      className="border-l border-neutral-700 pl-4 overflow-hidden"
                     >
                       <div className="flex items-center justify-between">
                         <p className="font-medium text-sm">
@@ -439,7 +463,7 @@ export default function App() {
                         </p>
                       </div>
 
-                      <p className="text-sm text-neutral-400 mt-1">
+                      <p className="text-sm text-neutral-400 mt-1 break-words">
                         {event.message}
                       </p>
                     </div>
