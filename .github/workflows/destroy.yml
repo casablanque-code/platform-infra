@@ -18,7 +18,9 @@ on:
       provider:
         required: true
         type: string
-
+      region:
+        required: true
+        type: string
       template:
         required: true
         type: string
