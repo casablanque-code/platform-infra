@@ -356,23 +356,52 @@ app.post("/api/environments", async (c) => {
 });
 
 async function processDeploymentQueue(env: Env) {
-  const queued = await env.DB.prepare(`
-    SELECT *
+  const candidate = await env.DB.prepare(`
+    SELECT id, status
     FROM deployments
     WHERE status IN ('queued', 'destroy_queued')
     ORDER BY created_at ASC
     LIMIT 1
   `).first();
 
-  if (!queued) {
+  if (!candidate) {
     return {
       ok: true,
       message: "no queued deployments",
     };
   }
 
-  const deploymentId = queued.id as string;
-  const envId = queued.environment_id as string;
+  const deploymentId = candidate.id as string;
+  const originalStatus = candidate.status as string;
+
+  // попытка "захвата"
+  const lock = await env.DB.prepare(`
+    UPDATE deployments
+    SET status = 'dispatching'
+    WHERE id = ?
+      AND status IN ('queued', 'destroy_queued')
+  `).bind(deploymentId).run();
+
+  if (lock.meta.changes === 0) {
+    return {
+      ok: true,
+      message: "already taken by another worker",
+    };
+  }
+
+  const deployment = await env.DB.prepare(`
+    SELECT *
+    FROM deployments
+    WHERE id = ?
+  `).bind(deploymentId).first();
+
+  if (!deployment) {
+    return {
+      error: "deployment not found",
+    };
+  }
+
+  const envId = deployment.environment_id as string;
 
   const environment = await env.DB.prepare(`
     SELECT *
@@ -387,14 +416,6 @@ async function processDeploymentQueue(env: Env) {
       error: "environment not found",
     };
   }
-
-  await env.DB.prepare(`
-    UPDATE deployments
-    SET status = 'dispatching'
-    WHERE id = ?
-  `)
-    .bind(deploymentId)
-    .run();
 
   await env.DB.prepare(`
     UPDATE environments
@@ -413,26 +434,24 @@ async function processDeploymentQueue(env: Env) {
     "Dispatching GitHub Actions workflow"
   );
 
+  // ВАЖНО: используем originalStatus
   const workflow =
-  queued.status === "destroy_queued"
-    ? env.GITHUB_DESTROY_WORKFLOW
-    : env.GITHUB_WORKFLOW;
+    originalStatus === "destroy_queued"
+      ? env.GITHUB_DESTROY_WORKFLOW
+      : env.GITHUB_WORKFLOW;
 
   const response = await fetch(
     `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/${workflow}/dispatches`,
     {
       method: "POST",
-
       headers: {
         Authorization: `Bearer ${env.GITHUB_TOKEN}`,
         Accept: "application/vnd.github+json",
         "Content-Type": "application/json",
         "User-Agent": "platform-infra-control-plane",
       },
-
       body: JSON.stringify({
         ref: env.GITHUB_REF,
-
         inputs: {
           deployment_id: deploymentId,
           environment_id: envId,
@@ -497,7 +516,7 @@ async function reconcileExpiredEnvironments(env: Env) {
     }
 
     const existingDestroy = await env.DB.prepare(`
-      SELECT id
+      SELECT id, status
       FROM deployments
       WHERE environment_id = ?
         AND status IN ('destroy_queued', 'dispatching')
