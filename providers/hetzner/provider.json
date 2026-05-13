@@ -1,0 +1,10 @@
+{
+  "id": "hetzner",
+
+  "runtime": {
+    "tfvars": {
+      "location": "fsn1",
+      "server_type": "cx22"
+    }
+  }
+}
