@@ -574,6 +574,7 @@ async function reconcileStuckDeployments(env: Env) {
   `).all();
 
   const now = Date.now();
+  const maxRetries = 3;
 
   for (const item of result.results as any[]) {
     const createdAt = new Date(
@@ -587,9 +588,41 @@ async function reconcileStuckDeployments(env: Env) {
       continue;
     }
 
+    const retryCount = Number(item.retry_count ?? 0);
+
+    if (retryCount >= maxRetries) {
+      await env.DB.prepare(`
+        UPDATE deployments
+        SET status = 'failed_permanent'
+        WHERE id = ?
+      `)
+        .bind(item.id)
+        .run();
+
+      await env.DB.prepare(`
+        UPDATE environments
+        SET status = 'failed',
+            updated_at = ?
+        WHERE id = ?
+      `)
+        .bind(new Date().toISOString(), item.environment_id)
+        .run();
+
+      await addDeploymentEvent(
+        env.DB,
+        item.id,
+        item.environment_id,
+        "failed_permanent",
+        `Deployment exceeded max retries (${maxRetries})`
+      );
+
+      continue;
+    }
+
     await env.DB.prepare(`
       UPDATE deployments
-      SET status = 'queued'
+      SET status = 'queued',
+          retry_count = retry_count + 1
       WHERE id = ?
     `)
       .bind(item.id)
@@ -600,7 +633,9 @@ async function reconcileStuckDeployments(env: Env) {
       item.id,
       item.environment_id,
       "requeued",
-      "Deployment requeued by recovery controller"
+      `Deployment requeued by recovery controller, retry ${
+        retryCount + 1
+      }/${maxRetries}`
     );
   }
 
