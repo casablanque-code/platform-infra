@@ -51,7 +51,7 @@ export default function App() {
 
   const [events, setEvents] = useState<DeploymentEvent[]>([]);
 
-  const [, setOutputs] = useState<EnvironmentOutput[]>([]);
+  const [outputs, setOutputs] = useState<EnvironmentOutput[]>([]);
 
   const [selectedDeployment, setSelectedDeployment] =
     useState<string | null>(null);
@@ -374,7 +374,33 @@ export default function App() {
 
             {selectedDeployment && (
               <div className="mt-8 border-t border-neutral-800 pt-6">
+{outputs.length > 0 && (
+  <div className="mb-6 border border-neutral-800 rounded-2xl p-4">
 
+    <h3 className="text-sm uppercase tracking-wider text-neutral-500 mb-4">
+      Runtime Outputs
+    </h3>
+
+    <div className="space-y-3">
+
+      {outputs.map((output) => (
+        <div
+          key={output.output_key}
+          className="flex items-center justify-between border-b border-neutral-900 pb-2"
+        >
+          <span className="text-sm text-neutral-400">
+            {output.output_key}
+          </span>
+
+          <code className="text-sm text-white">
+            {output.output_value.replaceAll('"', "")}
+          </code>
+        </div>
+      ))}
+
+    </div>
+  </div>
+)}
                 <div className="space-y-4">
 
                   {events.map((event) => (
