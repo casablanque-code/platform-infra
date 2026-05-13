@@ -521,4 +521,37 @@ app.notFound(async (c) => {
   return c.env.ASSETS.fetch(c.req.raw);
 });
 
-export default app;
+export default {
+  fetch: app.fetch,
+
+  async scheduled(
+    controller: ScheduledController,
+    env: Env,
+    ctx: ExecutionContext
+  ) {
+    const queued = await env.DB.prepare(`
+      SELECT *
+      FROM deployments
+      WHERE status = 'queued'
+      ORDER BY created_at ASC
+      LIMIT 1
+    `).first();
+
+    if (!queued) {
+      return;
+    }
+
+    const deploymentId = queued.id as string;
+
+    await fetch(
+      "https://platform-control-plane.casablanque.workers.dev/api/deployments/process",
+      {
+        method: "POST",
+      }
+    );
+
+    console.log(
+      `scheduler dispatched deployment ${deploymentId}`
+    );
+  },
+};

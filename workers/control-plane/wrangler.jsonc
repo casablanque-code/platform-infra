@@ -4,6 +4,12 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-05-12",
 
+  "triggers": {
+  "crons": [
+    "* * * * *"
+  ]
+},
+
   "assets": {
     "directory": "../../apps/dashboard/dist",
     "binding": "ASSETS"
