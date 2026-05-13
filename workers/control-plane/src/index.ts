@@ -198,6 +198,69 @@ app.delete("/api/environments/:id", async (c) => {
   });
 });
 
+app.post("/api/environments/:id/destroy", async (c) => {
+  const id = c.req.param("id");
+
+  const environment = await c.env.DB.prepare(`
+    SELECT *
+    FROM environments
+    WHERE id = ?
+  `)
+    .bind(id)
+    .first();
+
+  if (!environment) {
+    return c.json({
+      error: "environment not found",
+    }, 404);
+  }
+
+  const deploymentId = crypto.randomUUID();
+
+  await c.env.DB.prepare(`
+    INSERT INTO deployments (
+      id,
+      environment_id,
+      status,
+      created_at
+    )
+    VALUES (?, ?, ?, ?)
+  `)
+    .bind(
+      deploymentId,
+      id,
+      "destroy_queued",
+      new Date().toISOString()
+    )
+    .run();
+
+  await c.env.DB.prepare(`
+    UPDATE environments
+    SET status = 'destroy_queued',
+        updated_at = ?
+    WHERE id = ?
+  `)
+    .bind(
+      new Date().toISOString(),
+      id
+    )
+    .run();
+
+  await addDeploymentEvent(
+    c.env.DB,
+    deploymentId,
+    id,
+    "destroy_queued",
+    "Destroy requested"
+  );
+
+  return c.json({
+    ok: true,
+    deployment_id: deploymentId,
+    status: "destroy_queued",
+  });
+});
+
 app.post("/api/environments", async (c) => {
   const body = await c.req.json<{
     name: string;
@@ -350,8 +413,13 @@ async function processDeploymentQueue(env: Env) {
     "Dispatching GitHub Actions workflow"
   );
 
+  const workflow =
+  queued.status === "destroy_queued"
+    ? env.GITHUB_DESTROY_WORKFLOW
+    : env.GITHUB_WORKFLOW;
+
   const response = await fetch(
-    `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/${env.GITHUB_WORKFLOW}/dispatches`,
+    `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/${workflow}/dispatches`,
     {
       method: "POST",
 
@@ -571,6 +639,65 @@ app.post("/api/deployments/:id/complete", async (c) => {
   return c.json({
     ok: true,
     status: "success",
+  });
+});
+
+app.post("/api/deployments/:id/destroy-complete", async (c) => {
+  const authHeader = c.req.header("Authorization");
+
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({
+      error: "unauthorized",
+    }, 401);
+  }
+
+  const id = c.req.param("id");
+
+  const deployment = await c.env.DB.prepare(`
+    SELECT *
+    FROM deployments
+    WHERE id = ?
+  `)
+    .bind(id)
+    .first();
+
+  if (!deployment) {
+    return c.json({
+      error: "deployment not found",
+    }, 404);
+  }
+
+  const envId = deployment.environment_id as string;
+
+  await c.env.DB.prepare(`
+    UPDATE deployments
+    SET status = 'destroyed',
+        finished_at = ?
+    WHERE id = ?
+  `)
+    .bind(new Date().toISOString(), id)
+    .run();
+
+  await c.env.DB.prepare(`
+    UPDATE environments
+    SET status = 'destroyed',
+        updated_at = ?
+    WHERE id = ?
+  `)
+    .bind(new Date().toISOString(), envId)
+    .run();
+
+  await addDeploymentEvent(
+    c.env.DB,
+    id,
+    envId,
+    "destroyed",
+    "Infrastructure destroyed"
+  );
+
+  return c.json({
+    ok: true,
+    status: "destroyed",
   });
 });
 

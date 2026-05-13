@@ -308,13 +308,32 @@ export default function App() {
                       ttl: {env.ttl_hours}h
                     </span>
                   </div>
-                  <div className="mt-4">
+                  <div className="mt-4 flex gap-2">
+
+  <button
+    onClick={async () => {
+      await fetch(
+        `${API}/api/environments/${env.id}/destroy`,
+        {
+          method: "POST",
+        }
+      );
+
+      loadEnvironments();
+      loadDeployments();
+    }}
+    className="text-xs border border-yellow-900 text-yellow-400 rounded-lg px-3 py-2 hover:bg-yellow-950 transition"
+  >
+    destroy
+  </button>
+
   <button
     onClick={() => deleteEnvironment(env.id)}
     className="text-xs border border-red-900 text-red-400 rounded-lg px-3 py-2 hover:bg-red-950 transition"
   >
     delete
   </button>
+
 </div>
                 </div>
               ))}
