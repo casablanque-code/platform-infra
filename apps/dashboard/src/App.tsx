@@ -62,6 +62,8 @@ export default function App() {
 
   const [template, setTemplate] = useState("docker-host");
 
+  const [ttlHours, setTtlHours] = useState(72);
+
   async function loadTemplates() {
     const response = await fetch(`${API}/api/templates`);
     const data = await response.json();
@@ -123,7 +125,7 @@ export default function App() {
         provider,
         region: selectedTemplate.default_region,
         template,
-        ttl_hours: selectedTemplate.default_ttl_hours,
+        ttl_hours: ttlHours,
       }),
     });
 
@@ -216,6 +218,16 @@ export default function App() {
                 <option value="oracle">oracle</option>
                 <option value="hetzner">hetzner</option>
               </select>
+
+              <input
+  type="number"
+  value={ttlHours}
+  onChange={(e) =>
+    setTtlHours(Number(e.target.value))
+  }
+  placeholder="ttl hours"
+  className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-3"
+/>
 
               <div className="space-y-3">
 
