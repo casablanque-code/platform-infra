@@ -477,6 +477,95 @@ async function processDeploymentQueue(env: Env) {
   };
 }
 
+async function reconcileExpiredEnvironments(env: Env) {
+  const now = Date.now();
+
+  const result = await env.DB.prepare(`
+    SELECT *
+    FROM environments
+    WHERE status = 'running'
+  `).all();
+
+  for (const item of result.results as any[]) {
+    const createdAt = new Date(item.created_at as string).getTime();
+    const ttlHours = Number(item.ttl_hours ?? 72);
+
+    const expiresAt = createdAt + ttlHours * 60 * 60 * 1000;
+
+    if (now < expiresAt) {
+      continue;
+    }
+
+    const existingDestroy = await env.DB.prepare(`
+      SELECT id
+      FROM deployments
+      WHERE environment_id = ?
+        AND status IN ('destroy_queued', 'dispatching')
+      LIMIT 1
+    `)
+      .bind(item.id)
+      .first();
+
+    if (existingDestroy) {
+      continue;
+    }
+
+    const deploymentId = crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+
+    await env.DB.prepare(`
+      INSERT INTO deployments (
+        id,
+        environment_id,
+        environment_name,
+        provider,
+        status,
+        created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?)
+    `)
+      .bind(
+        deploymentId,
+        item.id,
+        item.name,
+        item.provider,
+        "destroy_queued",
+        timestamp
+      )
+      .run();
+
+    await env.DB.prepare(`
+      UPDATE environments
+      SET status = 'destroy_queued',
+          updated_at = ?
+      WHERE id = ?
+    `)
+      .bind(timestamp, item.id)
+      .run();
+
+    await addDeploymentEvent(
+      env.DB,
+      deploymentId,
+      item.id,
+      "ttl_expired",
+      `TTL expired after ${ttlHours} hours`
+    );
+
+    await addDeploymentEvent(
+      env.DB,
+      deploymentId,
+      item.id,
+      "destroy_queued",
+      "Destroy queued by TTL controller"
+    );
+  }
+
+  return {
+    ok: true,
+    checked: result.results.length,
+  };
+}
+
 app.post("/api/deployments/process", async (c) => {
   const result = await processDeploymentQueue(c.env);
 
@@ -713,11 +802,18 @@ export default {
     env: Env,
     ctx: ExecutionContext
   ) {
-    const result = await processDeploymentQueue(env);
+    const reconcileResult = await reconcileExpiredEnvironments(env);
+  
+    console.log(
+      "ttl reconcile",
+      JSON.stringify(reconcileResult)
+    );
+  
+    const queueResult = await processDeploymentQueue(env);
   
     console.log(
       "scheduler tick",
-      JSON.stringify(result)
+      JSON.stringify(queueResult)
     );
   }
 };
