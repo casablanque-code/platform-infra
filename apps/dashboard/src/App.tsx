@@ -133,6 +133,18 @@ export default function App() {
     loadDeployments();
   }
 
+  async function deleteEnvironment(id: string) {
+    await fetch(`${API}/api/environments/${id}`, {
+      method: "DELETE",
+    });
+  
+    loadEnvironments();
+    loadDeployments();
+  
+    setEvents([]);
+    setOutputs([]);
+  }
+
   useEffect(() => {
     loadTemplates();
     loadEnvironments();
@@ -296,6 +308,14 @@ export default function App() {
                       ttl: {env.ttl_hours}h
                     </span>
                   </div>
+                  <div className="mt-4">
+  <button
+    onClick={() => deleteEnvironment(env.id)}
+    className="text-xs border border-red-900 text-red-400 rounded-lg px-3 py-2 hover:bg-red-950 transition"
+  >
+    delete
+  </button>
+</div>
                 </div>
               ))}
 
@@ -356,34 +376,6 @@ export default function App() {
               <div className="mt-8 border-t border-neutral-800 pt-6">
 
                 <div className="space-y-4">
-
-                {outputs.length > 0 && (
-  <div className="mb-6 border border-neutral-800 rounded-2xl p-4">
-
-    <h3 className="text-sm uppercase tracking-wider text-neutral-500 mb-4">
-      Runtime Outputs
-    </h3>
-
-    <div className="space-y-3">
-
-      {outputs.map((output) => (
-        <div
-          key={output.output_key}
-          className="flex items-center justify-between border-b border-neutral-900 pb-2"
-        >
-          <span className="text-sm text-neutral-400">
-            {output.output_key}
-          </span>
-
-          <code className="text-sm text-white">
-            {output.output_value.replaceAll('"', "")}
-          </code>
-        </div>
-      ))}
-
-    </div>
-  </div>
-)}
 
                   {events.map((event) => (
                     <div

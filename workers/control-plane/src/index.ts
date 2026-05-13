@@ -150,6 +150,53 @@ app.get("/api/environments/:id/outputs", async (c) => {
   return c.json(result.results);
 });
 
+app.delete("/api/environments/:id", async (c) => {
+  const id = c.req.param("id");
+
+  const deployments = await c.env.DB.prepare(`
+    SELECT id
+    FROM deployments
+    WHERE environment_id = ?
+  `)
+    .bind(id)
+    .all();
+
+  for (const deployment of deployments.results as any[]) {
+    await c.env.DB.prepare(`
+      DELETE FROM deployment_events
+      WHERE deployment_id = ?
+    `)
+      .bind(deployment.id)
+      .run();
+  }
+
+  await c.env.DB.prepare(`
+    DELETE FROM deployment_outputs
+    WHERE environment_id = ?
+  `)
+    .bind(id)
+    .run();
+
+  await c.env.DB.prepare(`
+    DELETE FROM deployments
+    WHERE environment_id = ?
+  `)
+    .bind(id)
+    .run();
+
+  await c.env.DB.prepare(`
+    DELETE FROM environments
+    WHERE id = ?
+  `)
+    .bind(id)
+    .run();
+
+  return c.json({
+    ok: true,
+    deleted_environment_id: id,
+  });
+});
+
 app.post("/api/environments", async (c) => {
   const body = await c.req.json<{
     name: string;
