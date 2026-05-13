@@ -377,6 +377,73 @@ app.post("/api/deployments/:id/event", async (c) => {
   return c.json({ ok: true });
 });
 
+app.post("/api/deployments/:id/outputs", async (c) => {
+  const authHeader = c.req.header("Authorization");
+
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({
+      error: "unauthorized",
+    }, 401);
+  }
+
+  const id = c.req.param("id");
+
+  const deployment = await c.env.DB.prepare(`
+    SELECT *
+    FROM deployments
+    WHERE id = ?
+  `)
+    .bind(id)
+    .first();
+
+  if (!deployment) {
+    return c.json({
+      error: "deployment not found",
+    }, 404);
+  }
+
+  const envId = deployment.environment_id as string;
+
+  const outputs = await c.req.json<any>();
+
+  for (const [key, value] of Object.entries(outputs)) {
+    const typedValue = value as any;
+
+    await c.env.DB.prepare(`
+      INSERT INTO deployment_outputs (
+        id,
+        deployment_id,
+        environment_id,
+        output_key,
+        output_value,
+        created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?)
+    `)
+      .bind(
+        crypto.randomUUID(),
+        id,
+        envId,
+        key,
+        JSON.stringify(typedValue.value),
+        new Date().toISOString()
+      )
+      .run();
+  }
+
+  await addDeploymentEvent(
+    c.env.DB,
+    id,
+    envId,
+    "outputs_captured",
+    "Runtime outputs captured"
+  );
+
+  return c.json({
+    ok: true,
+  });
+});
+
 app.post("/api/deployments/:id/complete", async (c) => {
   const authHeader = c.req.header("Authorization");
 
