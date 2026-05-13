@@ -359,7 +359,7 @@ async function processDeploymentQueue(env: Env) {
   const queued = await env.DB.prepare(`
     SELECT *
     FROM deployments
-    WHERE status = 'queued'
+    WHERE status IN ('queued', 'destroy_queued')
     ORDER BY created_at ASC
     LIMIT 1
   `).first();
