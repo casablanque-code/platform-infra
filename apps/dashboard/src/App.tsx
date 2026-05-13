@@ -26,6 +26,12 @@ type DeploymentEvent = {
   created_at: string;
 };
 
+type EnvironmentOutput = {
+  output_key: string;
+  output_value: string;
+  created_at: string;
+};
+
 type PlatformTemplate = {
   id: string;
   name: string;
@@ -44,6 +50,8 @@ export default function App() {
   const [deployments, setDeployments] = useState<Deployment[]>([]);
 
   const [events, setEvents] = useState<DeploymentEvent[]>([]);
+
+  const [outputs, setOutputs] = useState<EnvironmentOutput[]>([]);
 
   const [selectedDeployment, setSelectedDeployment] =
     useState<string | null>(null);
@@ -83,6 +91,16 @@ export default function App() {
     const data = await response.json();
 
     setEvents(data);
+  }
+
+  async function loadOutputs(environmentId: string) {
+    const response = await fetch(
+      `${API}/api/environments/${environmentId}/outputs`
+    );
+  
+    const data = await response.json();
+  
+    setOutputs(data);
   }
 
   async function createEnvironment() {
@@ -295,9 +313,18 @@ export default function App() {
               {deployments.map((deployment) => (
                 <button
                   key={deployment.id}
-                  onClick={() => {
+                  onClick={async () => {
                     setSelectedDeployment(deployment.id);
+                  
                     loadEvents(deployment.id);
+                  
+                    const env = environments.find(
+                      (e) => e.name === deployment.environment_name
+                    );
+                  
+                    if (env) {
+                      loadOutputs(env.id);
+                    }
                   }}
                   className={`w-full text-left border rounded-2xl p-4 transition ${
                     selectedDeployment === deployment.id
@@ -329,6 +356,34 @@ export default function App() {
               <div className="mt-8 border-t border-neutral-800 pt-6">
 
                 <div className="space-y-4">
+
+                {outputs.length > 0 && (
+  <div className="mb-6 border border-neutral-800 rounded-2xl p-4">
+
+    <h3 className="text-sm uppercase tracking-wider text-neutral-500 mb-4">
+      Runtime Outputs
+    </h3>
+
+    <div className="space-y-3">
+
+      {outputs.map((output) => (
+        <div
+          key={output.output_key}
+          className="flex items-center justify-between border-b border-neutral-900 pb-2"
+        >
+          <span className="text-sm text-neutral-400">
+            {output.output_key}
+          </span>
+
+          <code className="text-sm text-white">
+            {output.output_value.replaceAll('"', "")}
+          </code>
+        </div>
+      ))}
+
+    </div>
+  </div>
+)}
 
                   {events.map((event) => (
                     <div
