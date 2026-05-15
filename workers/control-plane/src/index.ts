@@ -222,7 +222,7 @@ app.post("/api/environments/:id/destroy", async (c) => {
       id,
       environment_id,
       status,
-      created_at
+      created_at,
       next_retry_at = null
     )
     VALUES (?, ?, ?, ?)
@@ -441,6 +441,14 @@ AND (
     "Dispatching GitHub Actions workflow"
   );
 
+  await env.DB.prepare(`
+    UPDATE deployments
+    SET last_checked_at = ?
+    WHERE id = ?
+  `)
+    .bind(new Date().toISOString(), deploymentId)
+    .run();
+
   // ВАЖНО: используем originalStatus
   const workflow =
     originalStatus === "destroy_queued"
@@ -599,6 +607,8 @@ function getBackoffDelayMinutes(retry: number) {
   return 10;
 }
 
+
+
 async function reconcileStuckDeployments(env: Env) {
   const result = await env.DB.prepare(`
     SELECT *
@@ -687,6 +697,79 @@ async function reconcileStuckDeployments(env: Env) {
     ok: true,
     checked: result.results.length,
   };
+}
+
+async function syncGithubRuns(env: Env) {
+  const running = await env.DB.prepare(`
+    SELECT *
+    FROM deployments
+    WHERE status = 'dispatching'
+  `).all();
+
+  for (const item of running.results as any[]) {
+    const deploymentId = item.id as string;
+
+    if (item.last_checked_at) {
+      const last = new Date(item.last_checked_at).getTime();
+      if (Date.now() - last < 30_000) continue;
+      return {
+        ok: true,
+        checked: running.results.length,
+      };
+    }
+    
+
+    const res = await fetch(
+      `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/runs?per_page=5`,
+      {
+        headers: {
+          Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+          Accept: "application/vnd.github+json",
+        },
+      }
+    );
+
+    if (!res.ok) continue;
+
+    const data: any = await res.json();
+
+    const run = data.workflow_runs?.find((r: any) => {
+      return r.name === "Provision Environment";
+    });
+
+    if (!run) continue;
+
+    await env.DB.prepare(`
+      UPDATE deployments
+      SET last_checked_at = ?
+      WHERE id = ?
+    `)
+      .bind(new Date().toISOString(), deploymentId)
+      .run();
+
+    if (run.status === "completed") {
+      if (run.conclusion === "success") {
+        continue;
+      }
+
+      await env.DB.prepare(`
+        UPDATE deployments
+        SET status = 'queued',
+            retry_count = retry_count + 1
+        WHERE id = ?
+      `)
+        .bind(deploymentId)
+        .run();
+
+      await addDeploymentEvent(
+        env.DB,
+        deploymentId,
+        item.environment_id,
+        "retry",
+        `GitHub run failed: ${run.conclusion}`
+      );
+    }
+  }
 }
 
 app.post("/api/deployments/process", async (c) => {
@@ -927,24 +1010,19 @@ export default {
   ) {
     const reconcileResult = await reconcileExpiredEnvironments(env);
   
-    console.log(
-      "ttl reconcile",
-      JSON.stringify(reconcileResult)
-    );
-
-    const recoveryResult =
-  await reconcileStuckDeployments(env);
-
-console.log(
-  "deployment recovery",
-  JSON.stringify(recoveryResult)
-);
+    console.log("ttl reconcile", JSON.stringify(reconcileResult));
+  
+    const recoveryResult = await reconcileStuckDeployments(env);
+  
+    console.log("deployment recovery", JSON.stringify(recoveryResult));
   
     const queueResult = await processDeploymentQueue(env);
   
-    console.log(
-      "scheduler tick",
-      JSON.stringify(queueResult)
-    );
+    console.log("scheduler tick", JSON.stringify(queueResult));
+  
+    const syncResult = await syncGithubRuns(env);
+  
+    console.log("github sync", JSON.stringify(syncResult));
   }
+  
 };
