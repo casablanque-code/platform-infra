@@ -223,6 +223,7 @@ app.post("/api/environments/:id/destroy", async (c) => {
       environment_id,
       status,
       created_at
+      next_retry_at = null
     )
     VALUES (?, ?, ?, ?)
   `)
@@ -360,9 +361,15 @@ async function processDeploymentQueue(env: Env) {
     SELECT id, status
     FROM deployments
     WHERE status IN ('queued', 'destroy_queued')
+AND (
+  next_retry_at IS NULL
+  OR next_retry_at <= ?
+)
     ORDER BY created_at ASC
     LIMIT 1
-  `).first();
+`)
+.bind(new Date().toISOString())
+.first();
 
   if (!candidate) {
     return {
@@ -585,6 +592,13 @@ async function reconcileExpiredEnvironments(env: Env) {
   };
 }
 
+function getBackoffDelayMinutes(retry: number) {
+  if (retry === 0) return 1;
+  if (retry === 1) return 2;
+  if (retry === 2) return 5;
+  return 10;
+}
+
 async function reconcileStuckDeployments(env: Env) {
   const result = await env.DB.prepare(`
     SELECT *
@@ -638,24 +652,35 @@ async function reconcileStuckDeployments(env: Env) {
       continue;
     }
 
+    const nextRetryMinutes = getBackoffDelayMinutes(retryCount);
+
+    const jitter = Math.floor(Math.random() * 30); // до 30 секунд
+    
+    const nextRetryAt = new Date(
+      Date.now() +
+        nextRetryMinutes * 60 * 1000 +
+        jitter * 1000
+    ).toISOString();
+    
     await env.DB.prepare(`
       UPDATE deployments
       SET status = 'queued',
-          retry_count = retry_count + 1
+          retry_count = retry_count + 1,
+          next_retry_at = ?
       WHERE id = ?
     `)
-      .bind(item.id)
+      .bind(nextRetryAt, item.id)
       .run();
 
-    await addDeploymentEvent(
-      env.DB,
-      item.id,
-      item.environment_id,
-      "requeued",
-      `Deployment requeued by recovery controller, retry ${
-        retryCount + 1
-      }/${maxRetries}`
-    );
+      await addDeploymentEvent(
+        env.DB,
+        item.id,
+        item.environment_id,
+        "requeued",
+        `Retry in ${nextRetryMinutes}m (attempt ${
+          retryCount + 1
+        })`
+      );
   }
 
   return {
