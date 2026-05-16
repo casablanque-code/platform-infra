@@ -77,6 +77,8 @@ export default function App() {
 
   const [ttlHours, setTtlHours] = useState(72);
 
+  const [tab, setTab] = useState<"create" | "envs" | "timeline">("envs");
+
   async function loadTemplates() {
     const response = await fetch(`${API}/api/templates`);
     const data = await response.json();
@@ -207,15 +209,74 @@ export default function App() {
           </h1>
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-[420px_1fr_420px] gap-8">
+        <div className="flex gap-2 mb-8">
+  <button
+    onClick={() => setTab("create")}
+    className={`px-4 py-2 rounded-xl ${
+      tab === "create"
+        ? "bg-white text-black"
+        : "bg-neutral-900 border border-neutral-800"
+    }`}
+  >
+    Create
+  </button>
+
+  <button
+    onClick={() => setTab("envs")}
+    className={`px-4 py-2 rounded-xl ${
+      tab === "envs"
+        ? "bg-white text-black"
+        : "bg-neutral-900 border border-neutral-800"
+    }`}
+  >
+    Environments
+  </button>
+
+  <button
+    onClick={() => setTab("timeline")}
+    className={`px-4 py-2 rounded-xl ${
+      tab === "timeline"
+        ? "bg-white text-black"
+        : "bg-neutral-900 border border-neutral-800"
+    }`}
+  >
+    Timeline
+  </button>
+</div>
+
+<div className="max-w-[1200px] mx-auto">
+  
+  {tab === "create" && (
+    <div className="border border-neutral-800 rounded-2xl p-6 bg-neutral-950">
+      {            <h2 className="text-xl font-semibold mb-6">
+              Create Environment
+            </h2>}
+    </div>
+  )}
+
+  {tab === "envs" && (
+    <div className="border border-neutral-800 rounded-2xl p-6 bg-neutral-950">
+      {              <h2 className="text-xl font-semibold">
+                Environments
+              </h2>}
+    </div>
+  )}
+
+  {tab === "timeline" && (
+    <div className="border border-neutral-800 rounded-2xl p-6 bg-neutral-950">
+      {            <h2 className="text-xl font-semibold mb-6">
+              Deployment Timeline
+            </h2>}
+    </div>
+  )}
+
+</div>
 
           <div className="border border-neutral-800 rounded-2xl p-6 bg-neutral-950 h-fit">
 
-            <h2 className="text-xl font-semibold mb-6">
-              Create Environment
-            </h2>
 
-            <div className="space-y-4">
+
+          <div className="space-y-4 max-h-[600px] overflow-y-auto">
 
               <input
                 value={name}
@@ -265,7 +326,7 @@ export default function App() {
                       </span>
                     </div>
 
-                    <p className="text-sm text-neutral-400 mt-2">
+                    <p className="text-sm text-neutral-400 mt-1 break-words">
                       {item.description}
                     </p>
 
@@ -320,9 +381,7 @@ export default function App() {
           <div className="border border-neutral-800 rounded-2xl p-6 bg-neutral-950">
 
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-semibold">
-                Environments
-              </h2>
+
             </div>
 
             <div className="space-y-4">
@@ -392,9 +451,7 @@ export default function App() {
 
           <div className="border border-neutral-800 rounded-2xl p-6 bg-neutral-950 max-h-[85vh] overflow-y-auto">
 
-            <h2 className="text-xl font-semibold mb-6">
-              Deployment Timeline
-            </h2>
+
 
             <div className="space-y-4">
 
@@ -526,6 +583,5 @@ export default function App() {
 
         </div>
       </div>
-    </div>
   );
 }
