@@ -18,9 +18,11 @@ on:
       provider:
         required: true
         type: string
+
       region:
         required: true
         type: string
+
       template:
         required: true
         type: string
@@ -40,7 +42,7 @@ jobs:
 
       - name: Notify destroy started
         run: |
-          curl -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/event" \
+          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/event" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
             -d '{"type":"destroy_started","message":"Destroy workflow started"}'
@@ -48,11 +50,8 @@ jobs:
       - name: Resolve runtime manifest
         id: runtime
         run: |
-          TEMPLATE_PATH="templates/${{ inputs.template }}"
-          RUNTIME_FILE="$TEMPLATE_PATH/runtime.json"
-
+          RUNTIME_FILE="templates/${{ inputs.template }}/runtime.json"
           MODULE_PATH=$(jq -r '.executor.module_path' "$RUNTIME_FILE")
-
           echo "module_path=$MODULE_PATH" >> $GITHUB_OUTPUT
 
       - name: Generate tfvars
@@ -62,19 +61,39 @@ jobs:
             "../../../providers/${{ inputs.provider }}/provider.json" \
             > terraform.tfvars.json
 
-          cat terraform.tfvars.json
-
       - name: OpenTofu init
         working-directory: ${{ steps.runtime.outputs.module_path }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
-          tofu init
+          tofu init \
+            -backend-config="bucket=${{ secrets.R2_BUCKET }}" \
+            -backend-config="key=state/${{ inputs.environment_id }}/terraform.tfstate" \
+            -backend-config="region=auto" \
+            -backend-config="endpoint=${{ secrets.R2_ENDPOINT }}" \
+            -backend-config="skip_credentials_validation=true" \
+            -backend-config="skip_metadata_api_check=true" \
+            -backend-config="skip_region_validation=true" \
+            -backend-config="force_path_style=true"
 
       - name: OpenTofu destroy
         working-directory: ${{ steps.runtime.outputs.module_path }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           tofu destroy -auto-approve
 
       - name: Complete destroy
         run: |
-          curl -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/destroy-complete" \
+          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/destroy-complete" \
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}"
+
+      - name: Notify failure
+        if: failure()
+        run: |
+          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/event" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
+            -d '{"type":"destroy_failed","message":"Destroy workflow failed — check GitHub Actions logs"}'
