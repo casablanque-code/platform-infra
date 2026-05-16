@@ -248,8 +248,7 @@ app.post("/api/environments/:id/destroy", async (c) => {
       id,
       environment_id,
       status,
-      created_at,
-      next_retry_at = null
+      created_at
     )
     VALUES (?, ?, ?, ?)
   `)
@@ -319,28 +318,33 @@ app.post("/api/environments", async (c) => {
   const deploymentId = crypto.randomUUID();
 
   const now = new Date().toISOString();
+  const ttlHours = body.ttl_hours ?? template.default_ttl_hours;
 
   await c.env.DB.prepare(`
-INSERT INTO deployments (
-  id,
-  environment_id,
-  environment_name,
-  provider,
-  status,
-  inputs,
-  created_at
-)
+    INSERT INTO environments (
+      id,
+      name,
+      provider,
+      region,
+      template,
+      status,
+      ttl_hours,
+      created_at,
+      updated_at
+    )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  .bind(
-    deploymentId,
-    envId,
-    body.name,
-    body.provider,
-    "queued",
-    JSON.stringify(body.inputs ?? {}),
-    now
-  )
+    .bind(
+      envId,
+      body.name,
+      body.provider,
+      body.region,
+      body.template,
+      "queued",
+      ttlHours,
+      now,
+      now
+    )
     .run();
 
   await c.env.DB.prepare(`
@@ -735,10 +739,6 @@ async function syncGithubRuns(env: Env) {
     if (item.last_checked_at) {
       const last = new Date(item.last_checked_at).getTime();
       if (Date.now() - last < 30_000) continue;
-      return {
-        ok: true,
-        checked: running.results.length,
-      };
     }
     
 
@@ -796,6 +796,12 @@ async function syncGithubRuns(env: Env) {
 }
 
 app.post("/api/deployments/process", async (c) => {
+  const authHeader = c.req.header("Authorization");
+
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
   const result = await processDeploymentQueue(c.env);
 
   return c.json(result);
