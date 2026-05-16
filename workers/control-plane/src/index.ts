@@ -247,14 +247,18 @@ app.post("/api/environments/:id/destroy", async (c) => {
     INSERT INTO deployments (
       id,
       environment_id,
+      environment_name,
+      provider,
       status,
       created_at
     )
-    VALUES (?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?)
   `)
     .bind(
       deploymentId,
       id,
+      environment.name,
+      environment.provider,
       "destroy_queued",
       new Date().toISOString()
     )

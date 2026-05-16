@@ -408,17 +408,31 @@ function DeploymentsTab({ deployments }: { deployments: Deployment[] }) {
   const [events, setEvents] = useState<DeploymentEvent[]>([]);
   const [loading, setLoading] = useState(false);
 
-  async function selectDeployment(id: string) {
-    setSelected(id);
-    setLoading(true);
+  async function fetchEvents(id: string, showLoading = false) {
+    if (showLoading) setLoading(true);
     const data = await apiFetch<DeploymentEvent[]>(`/api/deployments/${id}/events`);
     setEvents(data);
-    setLoading(false);
+    if (showLoading) setLoading(false);
+  }
+
+  async function selectDeployment(id: string) {
+    setSelected(id);
+    fetchEvents(id, true);
   }
 
   useEffect(() => {
     if (deployments[0]?.id) selectDeployment(deployments[0].id);
   }, []);
+
+  // Auto-refresh events while selected deployment is in-progress
+  useEffect(() => {
+    if (!selected) return;
+    const active = deployments.find(d => d.id === selected);
+    const inProgress = active && !["success", "destroyed", "failed_permanent"].includes(active.status);
+    if (!inProgress) return;
+    const interval = setInterval(() => fetchEvents(selected), 3000);
+    return () => clearInterval(interval);
+  }, [selected, deployments]);
 
   const selectedDeployment = deployments.find(d => d.id === selected);
 
