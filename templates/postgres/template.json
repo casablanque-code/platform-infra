@@ -1,23 +1,23 @@
 {
   "id": "postgres",
   "name": "PostgreSQL",
-  "description": "Provision a managed-like PostgreSQL environment backed by infrastructure automation.",
+  "description": "PostgreSQL instance provisioned and configured via infrastructure automation.",
   "category": "database",
-  "providers": ["oracle", "hetzner"],
-  "default_region": "eu-frankfurt",
+  "providers": ["hetzner", "oracle", "aws", "azure", "gcp", "yandex"],
+  "default_region": "eu-central",
   "default_ttl_hours": 72,
   "inputs": [
     {
-      "name": "name",
-      "label": "Database environment name",
-      "type": "string",
-      "required": true
+      "key": "db_name",
+      "label": "Database name",
+      "type": "text",
+      "default": "app"
     },
     {
-      "name": "region",
-      "label": "Region",
-      "type": "string",
-      "required": true
+      "key": "db_user",
+      "label": "Database user",
+      "type": "text",
+      "default": "postgres"
     }
   ]
 }

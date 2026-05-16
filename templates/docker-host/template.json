@@ -1,23 +1,9 @@
 {
   "id": "docker-host",
   "name": "Docker Host",
-  "description": "Provision an Ubuntu VM prepared for Docker workloads.",
+  "description": "Ubuntu VM prepared for Docker workloads. Installs Docker CE + Compose on first boot.",
   "category": "compute",
-  "providers": ["oracle", "hetzner"],
-  "default_region": "eu-frankfurt",
-  "default_ttl_hours": 72,
-  "inputs": [
-    {
-      "name": "name",
-      "label": "Environment name",
-      "type": "string",
-      "required": true
-    },
-    {
-      "name": "region",
-      "label": "Region",
-      "type": "string",
-      "required": true
-    }
-  ]
+  "providers": ["hetzner", "oracle", "aws", "azure", "gcp", "yandex"],
+  "default_region": "eu-central",
+  "default_ttl_hours": 72
 }

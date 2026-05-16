@@ -1,0 +1,10 @@
+{
+  "id": "azure",
+
+  "runtime": {
+    "tfvars": {
+      "region": "westeurope",
+      "vm_size": "Standard_B1s"
+    }
+  }
+}

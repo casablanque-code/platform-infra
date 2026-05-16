@@ -2,31 +2,64 @@ terraform {
   required_version = ">= 1.6.0"
 
   backend "s3" {
-    # All backend-config values are injected via -backend-config flags
-    # in the GitHub Actions workflow. Nothing hardcoded here.
+    # Injected via -backend-config flags in GitHub Actions workflow
   }
 }
 
-# ── Oracle vars ────────────────────────────────────────────────────────────────
+# ── Oracle ─────────────────────────────────────────────────────────────────────
 variable "region" {
   type    = string
-  default = "eu-frankfurt-1"
+  default = ""
 }
 
 variable "shape" {
   type    = string
-  default = "VM.Standard.E2.1.Micro"
+  default = ""
 }
 
-# ── Hetzner vars ───────────────────────────────────────────────────────────────
+# ── Hetzner ────────────────────────────────────────────────────────────────────
 variable "location" {
   type    = string
-  default = "fsn1"
+  default = ""
 }
 
 variable "server_type" {
   type    = string
-  default = "cx22"
+  default = ""
+}
+
+# ── AWS ────────────────────────────────────────────────────────────────────────
+variable "instance_type" {
+  type    = string
+  default = ""
+}
+
+# ── Azure ──────────────────────────────────────────────────────────────────────
+variable "vm_size" {
+  type    = string
+  default = ""
+}
+
+# ── GCP ────────────────────────────────────────────────────────────────────────
+variable "machine_type" {
+  type    = string
+  default = ""
+}
+
+# ── Yandex ─────────────────────────────────────────────────────────────────────
+variable "platform_id" {
+  type    = string
+  default = ""
+}
+
+variable "cores" {
+  type    = number
+  default = 2
+}
+
+variable "memory" {
+  type    = number
+  default = 2
 }
 
 # ── Postgres config ────────────────────────────────────────────────────────────
@@ -40,14 +73,14 @@ variable "db_user" {
   default = "postgres"
 }
 
-# ── Mock outputs ───────────────────────────────────────────────────────────────
-# Replace with real RDS/Cloud SQL/etc resource when provider is available.
-
+# ── Resolved values ────────────────────────────────────────────────────────────
 locals {
-  # Deterministic mock password derived from db_name + user.
-  # Not secure — replace with random_password resource when real.
-  mock_password = "mock-${var.db_name}-${var.db_user}-secret"
+  resolved_region = coalesce(var.region, var.location, "unknown")
+  mock_password   = "mock-${var.db_name}-${var.db_user}-secret"
 }
+
+# ── Mock outputs ───────────────────────────────────────────────────────────────
+# Replace with real RDS / Cloud SQL / etc when credentials are available.
 
 output "db_host" {
   value = "postgres.internal"
@@ -76,5 +109,5 @@ output "db_url" {
 }
 
 output "region" {
-  value = var.region != "eu-frankfurt-1" ? var.region : var.location
+  value = local.resolved_region
 }

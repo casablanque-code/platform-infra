@@ -52,7 +52,9 @@ jobs:
         run: |
           RUNTIME_FILE="templates/${{ inputs.template }}/runtime.json"
           MODULE_PATH=$(jq -r '.executor.module_path' "$RUNTIME_FILE")
+          HAS_BOOTSTRAP=$(jq -r 'if .post_provision then "true" else "false" end' "$RUNTIME_FILE")
           echo "module_path=$MODULE_PATH" >> $GITHUB_OUTPUT
+          echo "has_bootstrap=$HAS_BOOTSTRAP" >> $GITHUB_OUTPUT
 
       - name: Generate tfvars
         working-directory: ${{ steps.runtime.outputs.module_path }}
@@ -93,18 +95,89 @@ jobs:
         run: |
           tofu apply -auto-approve
 
-      - name: Capture and upload outputs
+      - name: Capture outputs
+        id: outputs
         working-directory: ${{ steps.runtime.outputs.module_path }}
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           tofu output -json > outputs.json
           cat outputs.json
+
+          PUBLIC_IP=$(jq -r '.public_ip.value // empty' outputs.json)
+          SSH_PORT=$(jq -r '.ssh_port.value // "22"' outputs.json)
+          IS_MOCK=$(echo "$PUBLIC_IP" | grep -q "^203\.0\.113\." && echo "true" || echo "false")
+
+          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
+          echo "ssh_port=$SSH_PORT" >> $GITHUB_OUTPUT
+          echo "is_mock=$IS_MOCK" >> $GITHUB_OUTPUT
+
+      - name: Upload outputs to control plane
+        working-directory: ${{ steps.runtime.outputs.module_path }}
+        run: |
           curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/outputs" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
             --data @outputs.json
+
+      - name: Skip bootstrap (mock IP)
+        if: steps.outputs.outputs.is_mock == 'true'
+        run: |
+          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/event" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
+            -d '{"type":"bootstrap_skipped","message":"Mock IP detected — bootstrap skipped"}'
+
+      - name: Setup SSH key
+        if: steps.outputs.outputs.is_mock == 'false' && steps.runtime.outputs.has_bootstrap == 'true'
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.BOOTSTRAP_SSH_KEY }}" > ~/.ssh/bootstrap_key
+          chmod 600 ~/.ssh/bootstrap_key
+          cat >> ~/.ssh/config << EOF
+          Host ${{ steps.outputs.outputs.public_ip }}
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            IdentityFile ~/.ssh/bootstrap_key
+            Port ${{ steps.outputs.outputs.ssh_port }}
+          EOF
+
+      - name: Wait for SSH
+        if: steps.outputs.outputs.is_mock == 'false' && steps.runtime.outputs.has_bootstrap == 'true'
+        run: |
+          echo "Waiting for SSH on ${{ steps.outputs.outputs.public_ip }}:${{ steps.outputs.outputs.ssh_port }}..."
+          for i in $(seq 1 24); do
+            if ssh -o ConnectTimeout=5 \
+                   -o StrictHostKeyChecking=no \
+                   -i ~/.ssh/bootstrap_key \
+                   -p ${{ steps.outputs.outputs.ssh_port }} \
+                   deploy@${{ steps.outputs.outputs.public_ip }} "echo ok" 2>/dev/null; then
+              echo "SSH ready after ${i} attempts"
+              exit 0
+            fi
+            echo "Attempt $i/24, retrying in 5s..."
+            sleep 5
+          done
+          echo "SSH never became ready"; exit 1
+
+      - name: Run bootstrap scripts
+        if: steps.outputs.outputs.is_mock == 'false' && steps.runtime.outputs.has_bootstrap == 'true'
+        env:
+          SSH_OPTS: "-o StrictHostKeyChecking=no -i ~/.ssh/bootstrap_key -p ${{ steps.outputs.outputs.ssh_port }}"
+          TARGET: "deploy@${{ steps.outputs.outputs.public_ip }}"
+        run: |
+          RUNTIME_FILE="templates/${{ inputs.template }}/runtime.json"
+          SCRIPTS=$(jq -r '.post_provision[] | select(.type == "ssh_script") | .script' "$RUNTIME_FILE")
+
+          for SCRIPT in $SCRIPTS; do
+            echo "─── Running $SCRIPT ───"
+            scp $SSH_OPTS "$SCRIPT" "$TARGET:/tmp/$(basename $SCRIPT)"
+            ssh $SSH_OPTS "$TARGET" "chmod +x /tmp/$(basename $SCRIPT) && /tmp/$(basename $SCRIPT)"
+            echo "─── $SCRIPT done ───"
+          done
+
+          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/event" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
+            -d '{"type":"bootstrap_complete","message":"All bootstrap scripts executed successfully"}'
 
       - name: Complete deployment
         run: |

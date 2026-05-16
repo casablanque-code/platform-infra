@@ -41,35 +41,34 @@ const templates: PlatformTemplate[] = [
   {
     id: "docker-host",
     name: "Docker Host",
-    description: "Provision an Ubuntu VM prepared for Docker workloads.",
+    description: "Ubuntu VM prepared for Docker workloads. Installs Docker CE + Compose on first boot.",
     category: "compute",
-    providers: ["oracle", "hetzner"],
-    default_region: "eu-frankfurt",
+    providers: ["hetzner", "oracle", "aws", "azure", "gcp", "yandex"],
+    default_region: "eu-central",
     default_ttl_hours: 72,
-  
-    inputs: [
-      {
-        key: "vm_shape",
-        label: "VM Shape",
-        type: "text",
-        default: "VM.Standard.E2.1.Micro",
-      },
-      {
-        key: "disk_size",
-        label: "Disk Size (GB)",
-        type: "number",
-        default: 20,
-      },
-    ],
   },
   {
     id: "postgres",
     name: "PostgreSQL",
-    description: "Provision a managed-like PostgreSQL environment backed by infrastructure automation.",
+    description: "PostgreSQL instance provisioned and configured via infrastructure automation.",
     category: "database",
-    providers: ["oracle", "hetzner"],
-    default_region: "eu-frankfurt",
+    providers: ["hetzner", "oracle", "aws", "azure", "gcp", "yandex"],
+    default_region: "eu-central",
     default_ttl_hours: 72,
+    inputs: [
+      {
+        key: "db_name",
+        label: "Database name",
+        type: "text",
+        default: "app",
+      },
+      {
+        key: "db_user",
+        label: "Database user",
+        type: "text",
+        default: "postgres",
+      },
+    ],
   },
 ];
 

@@ -1,0 +1,10 @@
+{
+  "id": "gcp",
+
+  "runtime": {
+    "tfvars": {
+      "region": "europe-west3",
+      "machine_type": "e2-micro"
+    }
+  }
+}

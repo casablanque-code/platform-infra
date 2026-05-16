@@ -1,0 +1,12 @@
+{
+  "id": "yandex",
+
+  "runtime": {
+    "tfvars": {
+      "region": "ru-central1-a",
+      "platform_id": "standard-v3",
+      "cores": 2,
+      "memory": 2
+    }
+  }
+}
