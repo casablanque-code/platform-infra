@@ -16,6 +16,15 @@ type Env = {
   GITHUB_REF: string;
 };
 
+type TemplateInput = {
+  key: string;
+  label: string;
+  type: "text" | "number" | "select";
+  required?: boolean;
+  default?: string | number;
+  options?: string[];
+};
+
 type PlatformTemplate = {
   id: string;
   name: string;
@@ -24,6 +33,8 @@ type PlatformTemplate = {
   providers: string[];
   default_region: string;
   default_ttl_hours: number;
+
+  inputs?: TemplateInput[];
 };
 
 const templates: PlatformTemplate[] = [
@@ -35,6 +46,21 @@ const templates: PlatformTemplate[] = [
     providers: ["oracle", "hetzner"],
     default_region: "eu-frankfurt",
     default_ttl_hours: 72,
+  
+    inputs: [
+      {
+        key: "vm_shape",
+        label: "VM Shape",
+        type: "text",
+        default: "VM.Standard.E2.1.Micro",
+      },
+      {
+        key: "disk_size",
+        label: "Disk Size (GB)",
+        type: "number",
+        default: 20,
+      },
+    ],
   },
   {
     id: "postgres",
@@ -269,6 +295,7 @@ app.post("/api/environments", async (c) => {
     region: string;
     template: string;
     ttl_hours?: number;
+    inputs?: Record<string, any>;
   }>();
 
   const template = findTemplate(body.template);
@@ -294,30 +321,26 @@ app.post("/api/environments", async (c) => {
   const now = new Date().toISOString();
 
   await c.env.DB.prepare(`
-    INSERT INTO environments (
-      id,
-      name,
-      provider,
-      region,
-      template,
-      status,
-      ttl_hours,
-      created_at,
-      updated_at
-    )
+INSERT INTO deployments (
+  id,
+  environment_id,
+  environment_name,
+  provider,
+  status,
+  inputs,
+  created_at
+)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
-    .bind(
-      envId,
-      body.name,
-      body.provider,
-      body.region || template.default_region,
-      body.template,
-      "queued",
-      body.ttl_hours ?? template.default_ttl_hours,
-      now,
-      now
-    )
+  .bind(
+    deploymentId,
+    envId,
+    body.name,
+    body.provider,
+    "queued",
+    JSON.stringify(body.inputs ?? {}),
+    now
+  )
     .run();
 
   await c.env.DB.prepare(`

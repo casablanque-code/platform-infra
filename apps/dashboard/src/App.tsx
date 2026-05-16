@@ -32,6 +32,15 @@ type EnvironmentOutput = {
   created_at: string;
 };
 
+type TemplateInput = {
+  key: string;
+  label: string;
+  type: "text" | "number" | "select";
+  required?: boolean;
+  default?: string | number;
+  options?: string[];
+};
+
 type PlatformTemplate = {
   id: string;
   name: string;
@@ -40,6 +49,8 @@ type PlatformTemplate = {
   providers: string[];
   default_region: string;
   default_ttl_hours: number;
+
+  inputs?: TemplateInput[];
 };
 
 export default function App() {
@@ -61,6 +72,8 @@ export default function App() {
   const [provider, setProvider] = useState("oracle");
 
   const [template, setTemplate] = useState("docker-host");
+
+  const [inputValues, setInputValues] = useState<Record<string, any>>({});
 
   const [ttlHours, setTtlHours] = useState(72);
 
@@ -125,7 +138,8 @@ export default function App() {
         provider,
         region: selectedTemplate.default_region,
         template,
-        ttl_hours: ttlHours,
+        ttl_hours: selectedTemplate.default_ttl_hours,
+        inputs: inputValues,
       }),
     });
 
@@ -279,6 +293,29 @@ export default function App() {
 
             </div>
           </div>
+
+          {templates.find(t => t.id === template)?.inputs?.map((input) => (
+  <div key={input.key} className="mt-3">
+    <label className="text-xs text-neutral-500">
+      {input.label}
+    </label>
+
+    <input
+      type={input.type === "number" ? "number" : "text"}
+      value={inputValues[input.key] ?? input.default ?? ""}
+      onChange={(e) =>
+        setInputValues((prev) => ({
+          ...prev,
+          [input.key]:
+            input.type === "number"
+              ? Number(e.target.value)
+              : e.target.value,
+        }))
+      }
+      className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-2 mt-1"
+    />
+  </div>
+))}
 
           <div className="border border-neutral-800 rounded-2xl p-6 bg-neutral-950">
 
