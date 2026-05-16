@@ -30,6 +30,9 @@ on:
 jobs:
   provision:
     runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
     steps:
       - name: Checkout repository
@@ -98,6 +101,9 @@ jobs:
       - name: Capture outputs
         id: outputs
         working-directory: ${{ steps.runtime.outputs.module_path }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           tofu output -json > outputs.json
           cat outputs.json
