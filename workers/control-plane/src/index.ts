@@ -1045,9 +1045,6 @@ app.notFound(async (c) => {
   return c.env.ASSETS.fetch(c.req.raw);
 });
 
-export default {
-  fetch: app.fetch,
-
 // ── Node check-in ──────────────────────────────────────────────────────────────
 
 app.post("/api/nodes/checkin", async (c) => {
@@ -1200,6 +1197,9 @@ async function reconcileNodeHealth(env: Env) {
     recovered: recovered.results.length,
   };
 }
+
+export default {
+  fetch: app.fetch,
 
   async scheduled(
     controller: ScheduledController,
