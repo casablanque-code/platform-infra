@@ -811,6 +811,18 @@ async function syncGithubRuns(env: Env) {
   }
 }
 
+app.delete("/api/deployments/:id", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const { id } = c.req.param();
+  await c.env.DB.prepare(`DELETE FROM deployment_events WHERE deployment_id = ?`).bind(id).run();
+  await c.env.DB.prepare(`DELETE FROM deployments WHERE id = ?`).bind(id).run();
+  return c.json({ ok: true });
+});
+
 app.post("/api/deployments/process", async (c) => {
   const authHeader = c.req.header("Authorization");
 
@@ -1160,6 +1172,17 @@ app.get("/api/nodes/:id", async (c) => {
   if (!node) return c.json({ error: "not found" }, 404);
 
   return c.json(node);
+});
+
+app.delete("/api/nodes/:id", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const { id } = c.req.param();
+  await c.env.DB.prepare(`DELETE FROM nodes WHERE id = ?`).bind(id).run();
+  return c.json({ ok: true });
 });
 
 // ── reconcileNodeHealth ────────────────────────────────────────────────────────

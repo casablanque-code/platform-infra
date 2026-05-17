@@ -1,6 +1,7 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 
 const API = window.location.origin;
+const LIME = "#CBFF4D";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -71,27 +72,37 @@ type PlatformTemplate = {
   inputs?: TemplateInput[];
 };
 
-type Tab = "dashboard" | "environments" | "deployments" | "nodes" | "new";
+type Tab = "dashboard" | "environments" | "deployments" | "nodes" | "create";
+
+// ─── API ──────────────────────────────────────────────────────────────────────
+
+async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${API}${path}`, options);
+  return res.json();
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function statusColor(status: string): string {
-  if (status.includes("destroy")) return "text-amber-400 bg-amber-400/10 border-amber-400/30";
-  if (status === "running") return "text-emerald-400 bg-emerald-400/10 border-emerald-400/30";
-  if (status === "queued") return "text-sky-400 bg-sky-400/10 border-sky-400/30";
-  if (status === "dispatching") return "text-violet-400 bg-violet-400/10 border-violet-400/30";
-  if (status.includes("failed") || status.includes("permanent")) return "text-red-400 bg-red-400/10 border-red-400/30";
-  if (status === "destroyed") return "text-neutral-500 bg-neutral-500/10 border-neutral-500/30";
-  if (status === "success") return "text-emerald-400 bg-emerald-400/10 border-emerald-400/30";
-  return "text-neutral-400 bg-neutral-400/10 border-neutral-400/30";
+function statusColor(status: string) {
+  if (status === "running" || status === "success" || status === "destroyed")
+    return { text: "text-emerald-400", bg: "bg-emerald-400/10", border: "border-emerald-400/25" };
+  if (status === "queued")
+    return { text: "text-sky-400", bg: "bg-sky-400/10", border: "border-sky-400/25" };
+  if (status === "dispatching" || status === "workflow_dispatched")
+    return { text: "text-violet-400", bg: "bg-violet-400/10", border: "border-violet-400/25" };
+  if (status.includes("destroy"))
+    return { text: "text-amber-400", bg: "bg-amber-400/10", border: "border-amber-400/25" };
+  if (status.includes("failed") || status.includes("permanent"))
+    return { text: "text-red-400", bg: "bg-red-400/10", border: "border-red-400/25" };
+  return { text: "text-neutral-500", bg: "bg-neutral-500/10", border: "border-neutral-500/25" };
 }
 
 function StatusPill({ status }: { status: string }) {
+  const c = statusColor(status);
+  const active = status === "running" || status === "dispatching";
   return (
-    <span className={`inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider px-2.5 py-1 rounded-full border ${statusColor(status)}`}>
-      {(status === "running" || status === "dispatching") && (
-        <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
-      )}
+    <span className={`inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider px-2.5 py-1 rounded-full border ${c.text} ${c.bg} ${c.border}`}>
+      {active && <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />}
       {status}
     </span>
   );
@@ -107,32 +118,21 @@ function timeAgo(iso: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-function ttlRemaining(createdAt: string, ttlHours: number): string {
-  const expiresAt = new Date(createdAt).getTime() + ttlHours * 3600000;
-  const diff = expiresAt - Date.now();
-  if (diff <= 0) return "expired";
-  const h = Math.floor(diff / 3600000);
-  const m = Math.floor((diff % 3600000) / 60000);
-  if (h > 0) return `${h}h ${m}m left`;
-  return `${m}m left`;
+function ttlInfo(createdAt: string, ttlHours: number): { label: string; pct: number; urgent: boolean } {
+  if (!ttlHours || ttlHours >= 8760) return { label: "no auto-destroy", pct: 100, urgent: false };
+  const expiresAt = new Date(createdAt).getTime() + ttlHours * 3600_000;
+  const totalMs = ttlHours * 3600_000;
+  const remainingMs = expiresAt - Date.now();
+  if (remainingMs <= 0) return { label: "expired", pct: 0, urgent: true };
+  const pct = Math.round((remainingMs / totalMs) * 100);
+  const urgent = remainingMs < 3 * 3600_000;
+  const h = Math.floor(remainingMs / 3600_000);
+  const m = Math.floor((remainingMs % 3600_000) / 60_000);
+  const label = h > 0 ? `${h}h ${m}m left` : `${m}m left`;
+  return { label, pct, urgent };
 }
 
-// ─── API ──────────────────────────────────────────────────────────────────────
-
-async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, options);
-  return res.json();
-}
-
-// ─── Subcomponents ────────────────────────────────────────────────────────────
-
-function SectionHeader({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="text-[11px] uppercase tracking-[0.2em] text-neutral-600 font-mono mb-4">
-      {children}
-    </p>
-  );
-}
+// ─── Shared UI ────────────────────────────────────────────────────────────────
 
 function Card({ children, className = "", onClick }: {
   children: React.ReactNode;
@@ -149,22 +149,41 @@ function Card({ children, className = "", onClick }: {
   );
 }
 
-function EmptyState({ label }: { label: string }) {
+function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-center py-16 text-neutral-700 font-mono text-sm">
-      {label}
+    <p className="text-[11px] uppercase tracking-[0.2em] text-neutral-600 font-mono mb-3">
+      {children}
+    </p>
+  );
+}
+
+function EmptyState({ label, sub }: { label: string; sub?: string }) {
+  return (
+    <div className="text-center py-16">
+      <p className="text-neutral-700 font-mono text-sm">{label}</p>
+      {sub && <p className="text-neutral-800 font-mono text-xs mt-1">{sub}</p>}
     </div>
   );
 }
 
-// ─── Dashboard Tab ────────────────────────────────────────────────────────────
+function DeleteConfirm({ onConfirm, onCancel, label = "Delete?" }: {
+  onConfirm: () => void;
+  onCancel: () => void;
+  label?: string;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-xs text-neutral-500 font-mono">{label}</span>
+      <button onClick={onConfirm} className="text-xs px-2 py-1 rounded bg-red-900/40 text-red-400 border border-red-900/60 hover:bg-red-900/60 transition-colors">yes</button>
+      <button onClick={onCancel} className="text-xs px-2 py-1 rounded bg-neutral-800 text-neutral-500 hover:bg-neutral-700 transition-colors">no</button>
+    </div>
+  );
+}
+
+// ─── Dashboard ────────────────────────────────────────────────────────────────
 
 function DashboardTab({
-  environments,
-  deployments,
-  nodes,
-  templates,
-  onNavigate,
+  environments, deployments, nodes, templates, onNavigate,
 }: {
   environments: Environment[];
   deployments: Deployment[];
@@ -172,77 +191,118 @@ function DashboardTab({
   templates: PlatformTemplate[];
   onNavigate: (tab: Tab) => void;
 }) {
-  const active = environments.filter(e => e.status === "running").length;
-  const queued = environments.filter(e => ["queued", "dispatching"].includes(e.status)).length;
-  const failed = environments.filter(e => e.status.includes("failed")).length;
-  const expiring = environments.filter(e => {
-    if (e.status !== "running") return false;
-    const remaining = new Date(e.created_at).getTime() + e.ttl_hours * 3600000 - Date.now();
-    return remaining > 0 && remaining < 3 * 3600000;
-  }).length;
+  const envStats = {
+    active: environments.filter(e => e.status === "running").length,
+    queued: environments.filter(e => ["queued", "dispatching"].includes(e.status)).length,
+    failed: environments.filter(e => e.status.includes("failed")).length,
+    expiring: environments.filter(e => {
+      if (e.status !== "running") return false;
+      return (new Date(e.created_at).getTime() + e.ttl_hours * 3_600_000 - Date.now()) < 3 * 3_600_000;
+    }).length,
+  };
 
-  // All unique providers from templates
+  const deployStats = {
+    running: deployments.filter(d => d.status === "dispatching").length,
+    failed: deployments.filter(d => d.status.includes("failed")).length,
+  };
+
+  const nodeStats = {
+    online: nodes.filter(n => n.status === "online").length,
+    unreachable: nodes.filter(n => n.status === "unreachable").length,
+  };
+
   const allProviders = [...new Set(templates.flatMap(t => t.providers))].sort();
-
-  // Environments running but node is unreachable
-  const degraded = environments.filter(e => {
-    if (e.status !== "running") return false;
-    const node = nodes.find(n => n.environment_id === e.id);
-    return node && node.status === "unreachable";
-  }).length;
-
-  const stats = [
-    { label: "Active", value: active, color: "text-emerald-400", tab: "environments" as Tab },
-    { label: "Queued", value: queued, color: "text-sky-400", tab: "environments" as Tab },
-    { label: "Failed", value: failed, color: "text-red-400", tab: "environments" as Tab },
-    { label: "Expiring soon", value: expiring, color: "text-amber-400", tab: "environments" as Tab },
-    { label: "Node lost", value: degraded, color: "text-red-400", tab: "nodes" as Tab },
-  ];
-
-  const recentDeployments = deployments.slice(0, 5);
 
   return (
     <div className="space-y-8">
-      {/* Stats */}
+
+      {/* Environments */}
       <div>
-        <SectionHeader>Overview</SectionHeader>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-          {stats.map(s => (
-            <Card
-              key={s.label}
-              className="p-5"
-              onClick={() => onNavigate(s.tab)}
-            >
-              <p className="text-neutral-600 text-xs font-mono uppercase tracking-wider mb-3">
-                {s.label}
-              </p>
-              <p className={`text-4xl font-light tabular-nums ${s.color}`}>
-                {s.value}
-              </p>
+        <SectionLabel>Environments</SectionLabel>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[
+            { label: "Active", value: envStats.active, color: "text-emerald-400" },
+            { label: "Queued", value: envStats.queued, color: "text-sky-400" },
+            { label: "Failed", value: envStats.failed, color: "text-red-400" },
+            { label: "Expiring", value: envStats.expiring, color: "text-amber-400" },
+          ].map(s => (
+            <Card key={s.label} className="p-5" onClick={() => onNavigate("environments")}>
+              <p className="text-[11px] uppercase tracking-wider text-neutral-600 font-mono mb-3">{s.label}</p>
+              <p className={`text-4xl font-light tabular-nums ${s.color}`}>{s.value}</p>
             </Card>
           ))}
         </div>
       </div>
 
-      {/* Recent activity */}
+      {/* Deployments + Nodes side by side */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div>
+          <SectionLabel>Deployments</SectionLabel>
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              { label: "In progress", value: deployStats.running, color: "text-violet-400" },
+              { label: "Failed", value: deployStats.failed, color: "text-red-400" },
+            ].map(s => (
+              <Card key={s.label} className="p-5" onClick={() => onNavigate("deployments")}>
+                <p className="text-[11px] uppercase tracking-wider text-neutral-600 font-mono mb-3">{s.label}</p>
+                <p className={`text-4xl font-light tabular-nums ${s.color}`}>{s.value}</p>
+              </Card>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <SectionLabel>Nodes</SectionLabel>
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              { label: "Online", value: nodeStats.online, color: "text-emerald-400" },
+              { label: "Unreachable", value: nodeStats.unreachable, color: "text-red-400" },
+            ].map(s => (
+              <Card key={s.label} className="p-5" onClick={() => onNavigate("nodes")}>
+                <p className="text-[11px] uppercase tracking-wider text-neutral-600 font-mono mb-3">{s.label}</p>
+                <p className={`text-4xl font-light tabular-nums ${s.color}`}>{s.value}</p>
+              </Card>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Providers */}
       <div>
-        <SectionHeader>Recent deployments</SectionHeader>
-        {recentDeployments.length === 0 ? (
+        <SectionLabel>Providers</SectionLabel>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          {allProviders.map(p => {
+            const running = environments.filter(e => e.provider === p && e.status === "running").length;
+            const total = environments.filter(e => e.provider === p).length;
+            const lost = nodes.filter(n => n.provider === p && n.status === "unreachable").length;
+            return (
+              <Card key={p} className="p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="font-mono text-sm text-neutral-300">{p}</p>
+                  {lost > 0 && <span className="text-[10px] text-red-400 font-mono">{lost} node lost</span>}
+                </div>
+                <p className="text-xs text-neutral-600">
+                  {running} running{total > running ? ` · ${total - running} other` : ""}
+                </p>
+              </Card>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Recent deployments */}
+      <div>
+        <SectionLabel>Recent activity</SectionLabel>
+        {deployments.length === 0 ? (
           <EmptyState label="no deployments yet" />
         ) : (
           <Card>
             <div className="divide-y divide-neutral-900">
-              {recentDeployments.map(d => (
+              {deployments.slice(0, 6).map(d => (
                 <div key={d.id} className="flex items-center justify-between px-5 py-3.5">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-neutral-200 truncate">
-                        {d.environment_name}
-                      </p>
-                      <p className="text-xs text-neutral-600 font-mono mt-0.5">
-                        {d.provider} · {timeAgo(d.created_at)}
-                      </p>
-                    </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-neutral-200 truncate">{d.environment_name}</p>
+                    <p className="text-xs text-neutral-600 font-mono mt-0.5">{d.provider} · {timeAgo(d.created_at)}</p>
                   </div>
                   <StatusPill status={d.status} />
                 </div>
@@ -252,48 +312,24 @@ function DashboardTab({
         )}
       </div>
 
-      {/* Providers */}
-      <div>
-        <SectionHeader>Providers</SectionHeader>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          {allProviders.map(p => {
-            const running = environments.filter(e => e.provider === p && e.status === "running").length;
-            const total = environments.filter(e => e.provider === p).length;
-            const hasUnreachable = nodes.some(n => n.provider === p && n.status === "unreachable");
-            return (
-              <Card key={p} className="p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <p className="font-mono text-sm text-neutral-300">{p}</p>
-                  {hasUnreachable && (
-                    <span className="text-[10px] text-red-400 font-mono">node lost</span>
-                  )}
-                </div>
-                <div className="flex gap-3 text-xs text-neutral-600">
-                  <span>{running} running</span>
-                  {total > running && <span>{total - running} other</span>}
-                </div>
-              </Card>
-            );
-          })}
-        </div>
-      </div>
     </div>
   );
 }
 
-// ─── Environments Tab ─────────────────────────────────────────────────────────
+// ─── Environments ─────────────────────────────────────────────────────────────
 
 function EnvironmentsTab({
-  environments,
-  onRefresh,
+  environments, nodes, onRefresh,
 }: {
   environments: Environment[];
+  nodes: Node[];
   onRefresh: () => void;
 }) {
-  const [filter, setFilter] = useState<string>("all");
+  const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [outputs, setOutputs] = useState<Record<string, EnvironmentOutput[]>>({});
+  const [confirming, setConfirming] = useState<{ id: string; action: "destroy" | "delete" } | null>(null);
 
   const statuses = ["all", "running", "queued", "dispatching", "failed", "destroyed"];
 
@@ -302,52 +338,46 @@ function EnvironmentsTab({
     .filter(e => e.name.toLowerCase().includes(search.toLowerCase()));
 
   async function loadOutputs(envId: string) {
-    if (outputs[envId]) return;
+    if (outputs[envId] !== undefined) return;
     const data = await apiFetch<EnvironmentOutput[]>(`/api/environments/${envId}/outputs`);
     setOutputs(prev => ({ ...prev, [envId]: data }));
   }
 
   function toggleExpanded(id: string) {
-    if (expanded === id) {
-      setExpanded(null);
-    } else {
-      setExpanded(id);
-      loadOutputs(id);
-    }
+    const next = expanded === id ? null : id;
+    setExpanded(next);
+    if (next) loadOutputs(next);
   }
 
-  async function destroyEnv(id: string, e: React.MouseEvent) {
-    e.stopPropagation();
+  async function doDestroy(id: string) {
     await apiFetch(`/api/environments/${id}/destroy`, { method: "POST" });
+    setConfirming(null);
     onRefresh();
   }
 
-  async function deleteEnv(id: string, e: React.MouseEvent) {
-    e.stopPropagation();
-    if (!confirm("Delete this environment and all its data?")) return;
+  async function doDelete(id: string) {
     await apiFetch(`/api/environments/${id}`, { method: "DELETE" });
+    setConfirming(null);
     onRefresh();
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {/* Filters */}
       <div className="flex flex-col sm:flex-row gap-3">
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
-          placeholder="Search environments..."
-          className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-2.5 text-sm placeholder:text-neutral-700 focus:outline-none focus:border-neutral-600"
+          placeholder="Search..."
+          className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-2.5 text-sm placeholder:text-neutral-700 focus:outline-none focus:border-neutral-700 transition-colors"
         />
         <div className="flex gap-1.5 flex-wrap">
           {statuses.map(s => (
             <button
               key={s}
               onClick={() => setFilter(s)}
-              className={`px-3 py-2 rounded-lg text-xs font-mono uppercase tracking-wider transition-colors ${
-                filter === s
-                  ? "bg-white text-black"
-                  : "bg-neutral-900 text-neutral-500 border border-neutral-800 hover:border-neutral-700"
+              className={`px-3 py-2 rounded-lg text-[11px] font-mono uppercase tracking-wider transition-colors ${
+                filter === s ? "bg-white text-black" : "bg-neutral-900 text-neutral-500 border border-neutral-800 hover:border-neutral-700"
               }`}
             >
               {s}
@@ -356,118 +386,146 @@ function EnvironmentsTab({
         </div>
       </div>
 
-      {/* List */}
       {filtered.length === 0 ? (
         <EmptyState label="no environments match" />
       ) : (
         <div className="space-y-2">
-          {filtered.map(env => (
-            <Card key={env.id} className="overflow-hidden">
-              {/* Row */}
-              <div
-                className="flex items-center gap-4 px-5 py-4 cursor-pointer hover:bg-neutral-900/50 transition-colors"
-                onClick={() => toggleExpanded(env.id)}
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-3">
-                    <p className="font-medium text-neutral-100 truncate">{env.name}</p>
-                    <StatusPill status={env.status} />
-                  </div>
-                  <p className="text-xs text-neutral-600 font-mono mt-1">
-                    {env.provider} · {env.region} · {env.template}
-                  </p>
-                </div>
-                <div className="flex items-center gap-3 shrink-0">
-                  {env.status === "running" && (
-                    <span className="text-xs text-neutral-600 font-mono hidden sm:block">
-                      {ttlRemaining(env.created_at, env.ttl_hours)}
-                    </span>
-                  )}
-                  {!["destroyed", "destroy_queued", "failed_permanent"].includes(env.status) && (
-                    <button
-                      onClick={e => destroyEnv(env.id, e)}
-                      className="text-xs px-3 py-1.5 rounded-lg border border-amber-900/60 text-amber-500 hover:bg-amber-950/40 transition-colors"
-                    >
-                      destroy
-                    </button>
-                  )}
-                  <button
-                    onClick={e => deleteEnv(env.id, e)}
-                    className="text-xs px-3 py-1.5 rounded-lg border border-red-900/60 text-red-500 hover:bg-red-950/40 transition-colors"
-                  >
-                    delete
-                  </button>
-                  <span className={`text-neutral-600 text-sm transition-transform duration-200 ${expanded === env.id ? "rotate-90" : ""}`}>
-                    ›
-                  </span>
-                </div>
-              </div>
+          {filtered.map(env => {
+            const node = nodes.find(n => n.environment_id === env.id);
+            const ttl = ttlInfo(env.created_at, env.ttl_hours);
+            const isExpanded = expanded === env.id;
+            const isConfirming = confirming?.id === env.id;
 
-              {/* Expanded: outputs */}
-              {expanded === env.id && (
-                <div className="border-t border-neutral-800/60 px-5 py-4 bg-neutral-950/80">
-                  {/* TTL bar */}
-                  {env.status === "running" && (() => {
-                    const expiresAt = new Date(env.created_at).getTime() + env.ttl_hours * 3600000;
-                    const totalMs = env.ttl_hours * 3600000;
-                    const remainingMs = Math.max(0, expiresAt - Date.now());
-                    const pct = Math.round((remainingMs / totalMs) * 100);
-                    const isExpiringSoon = remainingMs < 3 * 3600000;
-                    return (
-                      <div className="mb-4">
+            return (
+              <Card key={env.id} className="overflow-hidden">
+                {/* Main row */}
+                <div
+                  className="flex items-center gap-4 px-5 py-4 cursor-pointer hover:bg-white/[0.02] transition-colors"
+                  onClick={() => !isConfirming && toggleExpanded(env.id)}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <p className="font-medium text-neutral-100">{env.name}</p>
+                      <StatusPill status={env.status} />
+                      {/* Node health indicator */}
+                      {node && (
+                        <span className={`text-[10px] font-mono ${node.status === "online" ? "text-emerald-500" : "text-red-400"}`}>
+                          {node.status === "online" ? "● node online" : "● node lost"}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-neutral-600 font-mono mt-1">
+                      {env.provider} · {env.region} · {env.template}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-3 shrink-0">
+                    {/* TTL */}
+                    {env.status === "running" && ttl.label !== "no auto-destroy" && (
+                      <span className={`text-xs font-mono hidden sm:block ${ttl.urgent ? "text-amber-400" : "text-neutral-600"}`}>
+                        {ttl.label}
+                      </span>
+                    )}
+
+                    {/* Actions */}
+                    {isConfirming ? (
+                      <DeleteConfirm
+                        label={confirming!.action === "destroy" ? "Destroy?" : "Delete?"}
+                        onConfirm={() => confirming!.action === "destroy" ? doDestroy(env.id) : doDelete(env.id)}
+                        onCancel={() => setConfirming(null)}
+                      />
+                    ) : (
+                      <>
+                        {!["destroyed", "destroy_queued", "failed_permanent"].includes(env.status) && (
+                          <button
+                            onClick={e => { e.stopPropagation(); setConfirming({ id: env.id, action: "destroy" }); }}
+                            className="text-xs px-3 py-1.5 rounded-lg border border-amber-900/50 text-amber-500 hover:bg-amber-950/40 transition-colors"
+                          >
+                            destroy
+                          </button>
+                        )}
+                        <button
+                          onClick={e => { e.stopPropagation(); setConfirming({ id: env.id, action: "delete" }); }}
+                          className="text-xs px-3 py-1.5 rounded-lg border border-red-900/50 text-red-500 hover:bg-red-950/40 transition-colors"
+                        >
+                          delete
+                        </button>
+                      </>
+                    )}
+
+                    <span className={`text-neutral-600 text-sm transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`}>›</span>
+                  </div>
+                </div>
+
+                {/* Expanded */}
+                {isExpanded && (
+                  <div className="border-t border-neutral-800/50 px-5 py-4 bg-neutral-950/60 space-y-4">
+                    {/* TTL bar */}
+                    {env.status === "running" && ttl.label !== "no auto-destroy" && (
+                      <div>
                         <div className="flex justify-between text-[11px] font-mono mb-1.5">
                           <span className="text-neutral-700 uppercase tracking-wider">Lifetime</span>
-                          <span className={isExpiringSoon ? "text-amber-400" : "text-neutral-500"}>
-                            {ttlRemaining(env.created_at, env.ttl_hours)}
-                          </span>
+                          <span className={ttl.urgent ? "text-amber-400" : "text-neutral-500"}>{ttl.label}</span>
                         </div>
                         <div className="h-1 bg-neutral-800 rounded-full overflow-hidden">
                           <div
-                            className={`h-full rounded-full transition-all ${isExpiringSoon ? "bg-amber-400" : "bg-emerald-500"}`}
-                            style={{ width: `${pct}%` }}
+                            className={`h-full rounded-full transition-all ${ttl.urgent ? "bg-amber-400" : "bg-emerald-500"}`}
+                            style={{ width: `${ttl.pct}%` }}
                           />
                         </div>
                       </div>
-                    );
-                  })()}
+                    )}
 
-                  {outputs[env.id] === undefined ? (
-                    <p className="text-xs text-neutral-700 font-mono">loading outputs...</p>
-                  ) : outputs[env.id].length === 0 ? (
-                    <p className="text-xs text-neutral-700 font-mono">no outputs captured yet</p>
-                  ) : (
-                    <div className="space-y-2">
-                      <p className="text-[11px] uppercase tracking-[0.2em] text-neutral-700 font-mono mb-3">
-                        Runtime outputs
-                      </p>
-                      {outputs[env.id].map(o => (
-                        <div key={o.output_key} className="flex items-start justify-between gap-6">
-                          <span className="text-xs text-neutral-500 font-mono">{o.output_key}</span>
-                          <code className="text-xs text-neutral-200 font-mono text-right">
-                            {o.output_value.replace(/^"|"$/g, "")}
-                          </code>
+                    {/* Node info */}
+                    {node && (
+                      <div className="flex items-center gap-4 text-xs font-mono">
+                        <span className="text-neutral-700 uppercase tracking-wider text-[11px]">Node</span>
+                        <span className={node.status === "online" ? "text-emerald-400" : "text-red-400"}>{node.status}</span>
+                        {node.hostname && <span className="text-neutral-500">{node.hostname}</span>}
+                        {node.public_ip && <span className="text-neutral-500">{node.public_ip}</span>}
+                        <span className="text-neutral-700">seen {timeAgo(node.last_seen_at)}</span>
+                      </div>
+                    )}
+
+                    {/* Outputs */}
+                    {outputs[env.id] === undefined ? (
+                      <p className="text-xs text-neutral-700 font-mono">loading outputs...</p>
+                    ) : outputs[env.id].length === 0 ? (
+                      <p className="text-xs text-neutral-700 font-mono">no outputs yet</p>
+                    ) : (
+                      <div>
+                        <p className="text-[11px] uppercase tracking-[0.2em] text-neutral-700 font-mono mb-3">Outputs</p>
+                        <div className="space-y-2">
+                          {outputs[env.id].map(o => (
+                            <div key={o.output_key} className="flex items-start justify-between gap-6">
+                              <span className="text-xs text-neutral-600 font-mono">{o.output_key}</span>
+                              <code className="text-xs text-neutral-200 font-mono text-right">{o.output_value.replace(/^"|"$/g, "")}</code>
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </Card>
-          ))}
+                      </div>
+                    )}
+
+                    {/* UUID */}
+                    <p className="text-[10px] font-mono text-neutral-800">{env.id}</p>
+                  </div>
+                )}
+              </Card>
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
-// ─── Deployments Tab ──────────────────────────────────────────────────────────
+// ─── Deployments ──────────────────────────────────────────────────────────────
 
-function DeploymentsTab({ deployments }: { deployments: Deployment[] }) {
-  const [selected, setSelected] = useState<string | null>(
-    deployments[0]?.id ?? null
-  );
+function DeploymentsTab({ deployments, onRefresh }: { deployments: Deployment[]; onRefresh: () => void }) {
+  const [selected, setSelected] = useState<string | null>(deployments[0]?.id ?? null);
   const [events, setEvents] = useState<DeploymentEvent[]>([]);
   const [loading, setLoading] = useState(false);
+  const [confirming, setConfirming] = useState<string | null>(null);
 
   async function fetchEvents(id: string, showLoading = false) {
     if (showLoading) setLoading(true);
@@ -485,7 +543,6 @@ function DeploymentsTab({ deployments }: { deployments: Deployment[] }) {
     if (deployments[0]?.id) selectDeployment(deployments[0].id);
   }, []);
 
-  // Auto-refresh events while selected deployment is in-progress
   useEffect(() => {
     if (!selected) return;
     const active = deployments.find(d => d.id === selected);
@@ -495,92 +552,96 @@ function DeploymentsTab({ deployments }: { deployments: Deployment[] }) {
     return () => clearInterval(interval);
   }, [selected, deployments]);
 
+  async function doDelete(id: string) {
+    await apiFetch(`/api/deployments/${id}`, { method: "DELETE" });
+    setConfirming(null);
+    if (selected === id) setSelected(null);
+    onRefresh();
+  }
+
   const selectedDeployment = deployments.find(d => d.id === selected);
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-[360px_1fr] gap-4">
+    <div className="grid grid-cols-1 md:grid-cols-[340px_1fr] gap-4">
       {/* Left: list */}
-      <div className="space-y-2 md:max-h-[calc(100vh-220px)] md:overflow-y-auto pr-1">
+      <div className="space-y-2 md:max-h-[calc(100vh-220px)] md:overflow-y-auto scrollbar-thin pr-1">
         {deployments.length === 0 ? (
           <EmptyState label="no deployments yet" />
         ) : (
           deployments.map(d => (
             <Card
               key={d.id}
-              className={`p-4 ${selected === d.id ? "border-neutral-600 bg-neutral-900" : ""}`}
+              className={`p-4 ${selected === d.id ? "border-neutral-600 bg-neutral-900/60" : ""}`}
               onClick={() => selectDeployment(d.id)}
             >
               <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-neutral-200 truncate">
-                    {d.environment_name}
-                  </p>
-                  <p className="text-xs text-neutral-600 font-mono mt-1">
-                    {d.provider} · {timeAgo(d.created_at)}
-                  </p>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-neutral-200 truncate">{d.environment_name}</p>
+                  <p className="text-xs text-neutral-600 font-mono mt-1">{d.provider} · {timeAgo(d.created_at)}</p>
                   {d.retry_count > 0 && (
-                    <p className="text-xs text-amber-600 font-mono mt-1">
-                      {d.retry_count} retr{d.retry_count === 1 ? "y" : "ies"}
-                    </p>
+                    <p className="text-xs text-amber-600 font-mono mt-1">{d.retry_count} retr{d.retry_count === 1 ? "y" : "ies"}</p>
                   )}
                 </div>
-                <StatusPill status={d.status} />
+                <div className="flex flex-col items-end gap-2">
+                  <StatusPill status={d.status} />
+                  {confirming === d.id ? (
+                    <DeleteConfirm
+                      onConfirm={() => doDelete(d.id)}
+                      onCancel={() => setConfirming(null)}
+                    />
+                  ) : (
+                    <button
+                      onClick={e => { e.stopPropagation(); setConfirming(d.id); }}
+                      className="text-[10px] text-neutral-700 hover:text-red-500 font-mono transition-colors"
+                    >
+                      delete
+                    </button>
+                  )}
+                </div>
               </div>
-              <p className="text-[10px] font-mono text-neutral-800 mt-3 truncate">{d.id}</p>
             </Card>
           ))
         )}
       </div>
 
       {/* Right: events */}
-      <Card className="p-5 md:max-h-[calc(100vh-220px)] md:overflow-y-auto">
-        {!selected ? (
+      <Card className="p-5 md:max-h-[calc(100vh-220px)] md:overflow-y-auto scrollbar-thin">
+        {!selected || !selectedDeployment ? (
           <EmptyState label="select a deployment" />
         ) : (
           <>
-            {selectedDeployment && (
-              <div className="mb-5 pb-4 border-b border-neutral-800">
-                <div className="flex items-center gap-3 flex-wrap">
-                  <p className="font-medium text-neutral-100">
-                    {selectedDeployment.environment_name}
-                  </p>
-                  <StatusPill status={selectedDeployment.status} />
-                </div>
-                <p className="text-xs font-mono text-neutral-700 mt-1.5">{selected}</p>
+            <div className="mb-5 pb-4 border-b border-neutral-800">
+              <div className="flex items-center gap-3 flex-wrap">
+                <p className="font-medium text-neutral-100">{selectedDeployment.environment_name}</p>
+                <StatusPill status={selectedDeployment.status} />
               </div>
-            )}
+              <p className="text-xs font-mono text-neutral-800 mt-1.5">{selected}</p>
+            </div>
+
             {loading ? (
-              <p className="text-xs text-neutral-700 font-mono">loading events...</p>
+              <p className="text-xs text-neutral-700 font-mono">loading...</p>
             ) : events.length === 0 ? (
               <EmptyState label="no events" />
             ) : (
-              <div className="space-y-4">
-                {events.map((ev, i) => (
-                  <div key={ev.id} className="flex gap-4">
-                    {/* Timeline line */}
-                    <div className="flex flex-col items-center">
-                      <div className={`w-2 h-2 rounded-full mt-1 shrink-0 ${
-                        ev.type === "success" || ev.type === "destroyed"
-                          ? "bg-emerald-400"
-                          : ev.type.includes("fail")
-                          ? "bg-red-400"
-                          : "bg-neutral-600"
-                      }`} />
-                      {i < events.length - 1 && (
-                        <div className="w-px flex-1 bg-neutral-800/80 mt-1" />
-                      )}
-                    </div>
-                    <div className="pb-4 min-w-0">
-                      <div className="flex items-baseline gap-2 flex-wrap">
-                        <p className="text-sm font-mono text-neutral-300">{ev.type}</p>
-                        <p className="text-[11px] text-neutral-700">
-                          {new Date(ev.created_at).toLocaleTimeString()}
-                        </p>
+              <div className="space-y-0">
+                {events.map((ev, i) => {
+                  const c = statusColor(ev.type);
+                  return (
+                    <div key={ev.id} className="flex gap-4">
+                      <div className="flex flex-col items-center">
+                        <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${c.text.replace("text-", "bg-")}`} />
+                        {i < events.length - 1 && <div className="w-px flex-1 bg-neutral-800/60 mt-1" />}
                       </div>
-                      <p className="text-xs text-neutral-600 mt-1 break-words">{ev.message}</p>
+                      <div className="pb-4 min-w-0">
+                        <div className="flex items-baseline gap-2 flex-wrap">
+                          <p className="text-sm font-mono text-neutral-300">{ev.type}</p>
+                          <p className="text-[11px] text-neutral-700">{new Date(ev.created_at).toLocaleTimeString()}</p>
+                        </div>
+                        {ev.message && <p className="text-xs text-neutral-600 mt-0.5">{ev.message}</p>}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </>
@@ -590,18 +651,91 @@ function DeploymentsTab({ deployments }: { deployments: Deployment[] }) {
   );
 }
 
-// ─── New Environment Tab ───────────────────────────────────────────────────────
+// ─── Nodes ────────────────────────────────────────────────────────────────────
 
-function NewEnvironmentTab({
-  templates,
-  onSuccess,
-}: {
-  templates: PlatformTemplate[];
-  onSuccess: () => void;
-}) {
+function NodesTab({ nodes, onRefresh }: { nodes: Node[]; onRefresh: () => void }) {
+  const [confirming, setConfirming] = useState<string | null>(null);
+
+  async function doDelete(id: string) {
+    await apiFetch(`/api/nodes/${id}`, { method: "DELETE" });
+    setConfirming(null);
+    onRefresh();
+  }
+
+  return (
+    <div className="space-y-2">
+      {nodes.length === 0 ? (
+        <EmptyState
+          label="no nodes registered"
+          sub="nodes appear after a successful bootstrap"
+        />
+      ) : (
+        nodes.map(node => (
+          <Card key={node.id} className="p-5">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div className="space-y-1 min-w-0">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <p className="font-medium text-neutral-100">{node.hostname ?? node.environment_name}</p>
+                  <span className={`inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider px-2.5 py-1 rounded-full border ${
+                    node.status === "online"
+                      ? "text-emerald-400 bg-emerald-400/10 border-emerald-400/25"
+                      : "text-red-400 bg-red-400/10 border-red-400/25"
+                  }`}>
+                    {node.status === "online" && <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />}
+                    {node.status}
+                  </span>
+                </div>
+                <p className="text-xs text-neutral-600 font-mono">
+                  {node.provider}
+                  {node.public_ip ? ` · ${node.public_ip}` : ""}
+                  {node.agent_version ? ` · v${node.agent_version}` : ""}
+                </p>
+              </div>
+
+              <div className="flex flex-col items-end gap-2 shrink-0">
+                <div className="text-right">
+                  <p className="text-xs text-neutral-600 font-mono">last seen {timeAgo(node.last_seen_at)}</p>
+                  <p className="text-xs text-neutral-800 font-mono mt-0.5">registered {timeAgo(node.first_seen_at)}</p>
+                </div>
+                {confirming === node.id ? (
+                  <DeleteConfirm
+                    onConfirm={() => doDelete(node.id)}
+                    onCancel={() => setConfirming(null)}
+                  />
+                ) : (
+                  <button
+                    onClick={() => setConfirming(node.id)}
+                    className="text-xs px-3 py-1.5 rounded-lg border border-red-900/50 text-red-500 hover:bg-red-950/40 transition-colors"
+                  >
+                    delete
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-neutral-800/50 grid grid-cols-2 gap-4">
+              <div>
+                <p className="text-[10px] text-neutral-700 font-mono uppercase tracking-wider mb-1">Node ID</p>
+                <p className="text-[11px] font-mono text-neutral-600 break-all">{node.id}</p>
+              </div>
+              <div>
+                <p className="text-[10px] text-neutral-700 font-mono uppercase tracking-wider mb-1">Environment</p>
+                <p className="text-[11px] font-mono text-neutral-600 break-all">{node.environment_id}</p>
+              </div>
+            </div>
+          </Card>
+        ))
+      )}
+    </div>
+  );
+}
+
+// ─── Create ───────────────────────────────────────────────────────────────────
+
+function CreateTab({ templates, onSuccess }: { templates: PlatformTemplate[]; onSuccess: () => void }) {
   const [selectedTemplate, setSelectedTemplate] = useState<string>(templates[0]?.id ?? "");
   const [name, setName] = useState("");
-  const [provider, setProvider] = useState("hetzner");
+  const [provider, setProvider] = useState("");
   const [inputValues, setInputValues] = useState<Record<string, any>>({});
   const [ttlHours, setTtlHours] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -609,6 +743,11 @@ function NewEnvironmentTab({
 
   const tmpl = templates.find(t => t.id === selectedTemplate);
   const effectiveTtl = ttlHours ?? tmpl?.default_ttl_hours ?? 72;
+
+  // Reset provider when template changes
+  useEffect(() => {
+    if (tmpl?.providers[0]) setProvider(tmpl.providers[0]);
+  }, [selectedTemplate]);
 
   const TTL_OPTIONS = [
     { label: "1h", value: 1 },
@@ -632,7 +771,7 @@ function NewEnvironmentTab({
           provider,
           region: tmpl.default_region,
           template: tmpl.id,
-          ttl_hours: tmpl.default_ttl_hours,
+          ttl_hours: effectiveTtl,
           inputs: inputValues,
         }),
       });
@@ -641,6 +780,7 @@ function NewEnvironmentTab({
       } else {
         setName("");
         setInputValues({});
+        setTtlHours(null);
         onSuccess();
       }
     } catch {
@@ -651,41 +791,49 @@ function NewEnvironmentTab({
   }
 
   return (
-    <div className="max-w-xl space-y-6">
+    <div className="max-w-xl space-y-7">
+
       {/* Template picker */}
       <div>
-        <SectionHeader>Template</SectionHeader>
+        <p className="text-[11px] uppercase tracking-[0.2em] text-neutral-600 font-mono mb-3">Template</p>
         <div className="space-y-2">
-          {templates.map(t => (
-            <Card
-              key={t.id}
-              className={`p-4 ${selectedTemplate === t.id ? "border-neutral-500" : ""}`}
-              onClick={() => setSelectedTemplate(t.id)}
-            >
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="font-medium text-neutral-200">{t.name}</p>
-                  <p className="text-xs text-neutral-600 mt-1">{t.description}</p>
-                </div>
-                <span className="text-[10px] font-mono uppercase text-neutral-700 border border-neutral-800 rounded px-2 py-0.5 ml-4 shrink-0">
-                  {t.category}
-                </span>
-              </div>
-              <div className="flex gap-1.5 mt-3">
-                {t.providers.map(p => (
-                  <span key={p} className="text-[10px] font-mono text-neutral-600 border border-neutral-800 rounded px-2 py-0.5">
-                    {p}
+          {templates.map(t => {
+            const active = selectedTemplate === t.id;
+            return (
+              <div
+                key={t.id}
+                onClick={() => setSelectedTemplate(t.id)}
+                className={`border rounded-2xl p-4 cursor-pointer transition-all ${
+                  active
+                    ? "border-[#CBFF4D]/50 bg-[#CBFF4D]/5"
+                    : "border-neutral-800 bg-neutral-950 hover:border-neutral-700"
+                }`}
+              >
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className={`font-medium transition-colors ${active ? "text-[#CBFF4D]" : "text-neutral-200"}`}>
+                      {t.name}
+                    </p>
+                    <p className="text-xs text-neutral-600 mt-1">{t.description}</p>
+                  </div>
+                  <span className="text-[10px] font-mono uppercase text-neutral-700 border border-neutral-800 rounded px-2 py-0.5 ml-4 shrink-0">
+                    {t.category}
                   </span>
-                ))}
+                </div>
+                <div className="flex gap-1.5 mt-3">
+                  {t.providers.map(p => (
+                    <span key={p} className="text-[10px] font-mono text-neutral-600 border border-neutral-800 rounded px-2 py-0.5">{p}</span>
+                  ))}
+                </div>
               </div>
-            </Card>
-          ))}
+            );
+          })}
         </div>
       </div>
 
       {/* Config */}
       <div>
-        <SectionHeader>Configuration</SectionHeader>
+        <p className="text-[11px] uppercase tracking-[0.2em] text-neutral-600 font-mono mb-3">Configuration</p>
         <div className="space-y-3">
           <div>
             <label className="text-xs text-neutral-600 font-mono block mb-1.5">Name</label>
@@ -699,31 +847,30 @@ function NewEnvironmentTab({
 
           <div>
             <label className="text-xs text-neutral-600 font-mono block mb-1.5">Provider</label>
-            <select
-              value={provider}
-              onChange={e => setProvider(e.target.value)}
-              className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-neutral-600 transition-colors appearance-none"
-            >
-              {(tmpl?.providers ?? ["oracle", "hetzner"]).map(p => (
-                <option key={p} value={p}>{p}</option>
+            <div className="flex gap-2 flex-wrap">
+              {(tmpl?.providers ?? []).map(p => (
+                <button
+                  key={p}
+                  onClick={() => setProvider(p)}
+                  className={`px-3 py-2 rounded-lg text-sm font-mono transition-colors ${
+                    provider === p ? "bg-white text-black" : "bg-neutral-900 border border-neutral-800 text-neutral-500 hover:border-neutral-600"
+                  }`}
+                >
+                  {p}
+                </button>
               ))}
-            </select>
+            </div>
           </div>
 
-          {/* TTL selector */}
           <div>
-            <label className="text-xs text-neutral-600 font-mono block mb-1.5">
-              Lifetime
-            </label>
+            <label className="text-xs text-neutral-600 font-mono block mb-1.5">Lifetime</label>
             <div className="flex gap-2 flex-wrap">
               {TTL_OPTIONS.map(opt => (
                 <button
                   key={opt.value}
                   onClick={() => setTtlHours(opt.value)}
                   className={`px-3 py-2 rounded-lg text-sm font-mono transition-colors ${
-                    effectiveTtl === opt.value
-                      ? "bg-white text-black"
-                      : "bg-neutral-900 border border-neutral-800 text-neutral-500 hover:border-neutral-600"
+                    effectiveTtl === opt.value ? "bg-white text-black" : "bg-neutral-900 border border-neutral-800 text-neutral-500 hover:border-neutral-600"
                   }`}
                 >
                   {opt.label}
@@ -742,7 +889,7 @@ function NewEnvironmentTab({
                 <select
                   value={inputValues[input.key] ?? input.default ?? ""}
                   onChange={e => setInputValues(prev => ({ ...prev, [input.key]: e.target.value }))}
-                  className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-neutral-600 transition-colors appearance-none"
+                  className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-neutral-600 transition-colors"
                 >
                   {input.options?.map(o => <option key={o} value={o}>{o}</option>)}
                 </select>
@@ -762,22 +909,15 @@ function NewEnvironmentTab({
         </div>
       </div>
 
-      {tmpl && (
-        <p className="text-xs text-neutral-700 font-mono">
-          region: {tmpl.default_region}
-        </p>
-      )}
-
       {error && (
-        <p className="text-xs text-red-500 font-mono bg-red-950/30 border border-red-900/40 rounded-lg px-4 py-3">
-          {error}
-        </p>
+        <p className="text-xs text-red-500 font-mono bg-red-950/30 border border-red-900/40 rounded-lg px-4 py-3">{error}</p>
       )}
 
       <button
         onClick={create}
-        disabled={!name.trim() || loading}
-        className="w-full bg-white text-black rounded-xl py-3 text-sm font-semibold hover:bg-neutral-100 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        disabled={!name.trim() || !provider || loading}
+        style={{ backgroundColor: (!name.trim() || !provider || loading) ? undefined : LIME }}
+        className={`w-full rounded-xl py-3 text-sm font-semibold transition-all disabled:opacity-30 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500 text-black`}
       >
         {loading ? "creating..." : "create environment"}
       </button>
@@ -785,83 +925,13 @@ function NewEnvironmentTab({
   );
 }
 
-// ─── Nodes Tab ────────────────────────────────────────────────────────────────
-
-function NodesTab({ nodes }: { nodes: Node[] }) {
-  function nodeStatusColor(status: string) {
-    if (status === "online") return "text-emerald-400 bg-emerald-400/10 border-emerald-400/30";
-    if (status === "unreachable") return "text-red-400 bg-red-400/10 border-red-400/30";
-    return "text-neutral-500 bg-neutral-500/10 border-neutral-500/30";
-  }
-
-  return (
-    <div className="space-y-5">
-      {nodes.length === 0 ? (
-        <div className="text-center py-20">
-          <p className="text-neutral-700 font-mono text-sm mb-2">no nodes registered yet</p>
-          <p className="text-neutral-800 font-mono text-xs">
-            nodes appear here after a successful bootstrap
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {nodes.map(node => (
-            <Card key={node.id} className="p-5">
-              <div className="flex items-start justify-between gap-4 flex-wrap">
-                <div className="space-y-1 min-w-0">
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <p className="font-medium text-neutral-100">
-                      {node.hostname ?? node.environment_name}
-                    </p>
-                    <span className={`inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider px-2.5 py-1 rounded-full border ${nodeStatusColor(node.status)}`}>
-                      {node.status === "online" && (
-                        <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
-                      )}
-                      {node.status}
-                    </span>
-                  </div>
-                  <p className="text-xs text-neutral-600 font-mono">
-                    {node.provider} · {node.public_ip ?? "no ip"}
-                    {node.agent_version && ` · v${node.agent_version}`}
-                  </p>
-                </div>
-                <div className="text-right shrink-0">
-                  <p className="text-xs text-neutral-700 font-mono">
-                    last seen {timeAgo(node.last_seen_at)}
-                  </p>
-                  <p className="text-xs text-neutral-800 font-mono mt-1">
-                    since {timeAgo(node.first_seen_at)}
-                  </p>
-                </div>
-              </div>
-
-              {/* IDs */}
-              <div className="mt-4 pt-3 border-t border-neutral-800/60 flex gap-6 flex-wrap">
-                <div>
-                  <p className="text-[10px] text-neutral-700 font-mono uppercase tracking-wider mb-1">Node ID</p>
-                  <p className="text-[11px] font-mono text-neutral-600">{node.id}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] text-neutral-700 font-mono uppercase tracking-wider mb-1">Environment</p>
-                  <p className="text-[11px] font-mono text-neutral-600">{node.environment_id}</p>
-                </div>
-              </div>
-            </Card>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Root App ─────────────────────────────────────────────────────────────────
+// ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [templates, setTemplates] = useState<PlatformTemplate[]>([]);
   const [environments, setEnvironments] = useState<Environment[]>([]);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
-
   const [nodes, setNodes] = useState<Node[]>([]);
 
   const loadAll = useCallback(async () => {
@@ -888,93 +958,84 @@ export default function App() {
     { id: "environments", label: "Environments" },
     { id: "deployments", label: "Deployments" },
     { id: "nodes", label: "Nodes" },
-    { id: "new", label: "New" },
+    { id: "create", label: "Create" },
   ];
 
+  const activeEnvs = environments.filter(e => e.status === "running").length;
+  const activeJobs = deployments.filter(d => d.status === "dispatching").length;
+  const downNodes = nodes.filter(n => n.status === "unreachable").length;
+  const onlineNodes = nodes.filter(n => n.status === "online").length;
+
   return (
-    <div className="min-h-screen bg-[#080808] text-neutral-200">
-      <div className="max-w-6xl mx-auto px-4 py-8">
+    <>
+      {/* Custom scrollbar styles */}
+      <style>{`
+        * { scrollbar-width: thin; scrollbar-color: #262626 transparent; }
+        *::-webkit-scrollbar { width: 4px; height: 4px; }
+        *::-webkit-scrollbar-track { background: transparent; }
+        *::-webkit-scrollbar-thumb { background: #262626; border-radius: 99px; }
+        *::-webkit-scrollbar-thumb:hover { background: #404040; }
+      `}</style>
 
-        {/* Header */}
-        <div className="mb-8">
-          <p className="text-[11px] uppercase tracking-[0.3em] text-neutral-700 font-mono">
-            infrastructure control plane
-          </p>
-          <h1 className="text-3xl font-light tracking-tight mt-1.5 text-neutral-100">
-            platform-infra
-          </h1>
+      <div className="min-h-screen bg-[#080808] text-neutral-200">
+        <div className="max-w-6xl mx-auto px-4 py-8">
+
+          {/* Header */}
+          <div className="mb-8">
+            <p className="text-[11px] uppercase tracking-[0.3em] text-neutral-700 font-mono">infrastructure control plane</p>
+            <h1 className="text-3xl font-light tracking-tight mt-1.5">
+              <span className="text-neutral-100">platform</span>
+              <span style={{ color: LIME }}>-infra</span>
+            </h1>
+          </div>
+
+          {/* Tabs */}
+          <div className="flex gap-0 mb-8 border-b border-neutral-900">
+            {tabs.map(t => {
+              let badge: React.ReactNode = null;
+              if (t.id === "environments" && activeEnvs > 0)
+                badge = <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: `${LIME}20`, color: LIME }}>{activeEnvs}</span>;
+              if (t.id === "deployments" && activeJobs > 0)
+                badge = <span className="ml-1.5 text-[10px] bg-violet-400/15 text-violet-400 rounded-full px-1.5 py-0.5">{activeJobs}</span>;
+              if (t.id === "nodes" && downNodes > 0)
+                badge = <span className="ml-1.5 text-[10px] bg-red-400/15 text-red-400 rounded-full px-1.5 py-0.5">{downNodes} down</span>;
+              if (t.id === "nodes" && downNodes === 0 && onlineNodes > 0)
+                badge = <span className="ml-1.5 text-[10px] bg-emerald-400/15 text-emerald-400 rounded-full px-1.5 py-0.5">{onlineNodes}</span>;
+
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => setTab(t.id)}
+                  className={`px-4 py-2.5 text-sm font-mono transition-colors relative -mb-px flex items-center ${
+                    tab === t.id ? "text-neutral-100 border-b-2 border-[#CBFF4D]" : "text-neutral-600 hover:text-neutral-400"
+                  }`}
+                >
+                  {t.label}
+                  {badge}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Content */}
+          {tab === "dashboard" && (
+            <DashboardTab environments={environments} deployments={deployments} nodes={nodes} templates={templates} onNavigate={setTab} />
+          )}
+          {tab === "environments" && (
+            <EnvironmentsTab environments={environments} nodes={nodes} onRefresh={loadAll} />
+          )}
+          {tab === "deployments" && (
+            <DeploymentsTab deployments={deployments} onRefresh={loadAll} />
+          )}
+          {tab === "nodes" && (
+            <NodesTab nodes={nodes} onRefresh={loadAll} />
+          )}
+          {tab === "create" && (
+            <CreateTab templates={templates} onSuccess={() => { loadAll(); setTab("environments"); }} />
+          )}
+
         </div>
-
-        {/* Tabs */}
-        <div className="flex gap-1 mb-8 border-b border-neutral-900 pb-0">
-          {tabs.map(t => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`px-4 py-2.5 text-sm font-mono transition-colors relative -mb-px ${
-                tab === t.id
-                  ? "text-neutral-100 border-b-2 border-white"
-                  : "text-neutral-600 hover:text-neutral-400"
-              }`}
-            >
-              {t.label}
-              {t.id === "environments" && environments.filter(e => e.status === "running").length > 0 && (
-                <span className="ml-2 text-[10px] bg-emerald-400/15 text-emerald-400 rounded-full px-1.5 py-0.5">
-                  {environments.filter(e => e.status === "running").length}
-                </span>
-              )}
-              {t.id === "deployments" && deployments.filter(d => d.status === "dispatching").length > 0 && (
-                <span className="ml-2 text-[10px] bg-violet-400/15 text-violet-400 rounded-full px-1.5 py-0.5">
-                  {deployments.filter(d => d.status === "dispatching").length}
-                </span>
-              )}
-              {t.id === "nodes" && nodes.filter(n => n.status === "unreachable").length > 0 && (
-                <span className="ml-2 text-[10px] bg-red-400/15 text-red-400 rounded-full px-1.5 py-0.5">
-                  {nodes.filter(n => n.status === "unreachable").length} down
-                </span>
-              )}
-              {t.id === "nodes" && nodes.filter(n => n.status === "unreachable").length === 0 && nodes.length > 0 && (
-                <span className="ml-2 text-[10px] bg-emerald-400/15 text-emerald-400 rounded-full px-1.5 py-0.5">
-                  {nodes.filter(n => n.status === "online").length}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-
-        {/* Content */}
-        {tab === "dashboard" && (
-          <DashboardTab
-            environments={environments}
-            deployments={deployments}
-            nodes={nodes}
-            templates={templates}
-            onNavigate={setTab}
-          />
-        )}
-        {tab === "environments" && (
-          <EnvironmentsTab
-            environments={environments}
-            onRefresh={loadAll}
-          />
-        )}
-        {tab === "deployments" && (
-          <DeploymentsTab deployments={deployments} />
-        )}
-        {tab === "nodes" && (
-          <NodesTab nodes={nodes} />
-        )}
-        {tab === "new" && (
-          <NewEnvironmentTab
-            templates={templates}
-            onSuccess={() => {
-              loadAll();
-              setTab("environments");
-            }}
-          />
-        )}
-
       </div>
-    </div>
+    </>
   );
 }
