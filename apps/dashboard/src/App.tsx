@@ -163,11 +163,13 @@ function DashboardTab({
   environments,
   deployments,
   nodes,
+  templates,
   onNavigate,
 }: {
   environments: Environment[];
   deployments: Deployment[];
   nodes: Node[];
+  templates: PlatformTemplate[];
   onNavigate: (tab: Tab) => void;
 }) {
   const active = environments.filter(e => e.status === "running").length;
@@ -179,16 +181,22 @@ function DashboardTab({
     return remaining > 0 && remaining < 3 * 3600000;
   }).length;
 
-  const onlineNodes = nodes.filter(n => n.status === "online").length;
-  const unreachableNodes = nodes.filter(n => n.status === "unreachable").length;
+  // All unique providers from templates
+  const allProviders = [...new Set(templates.flatMap(t => t.providers))].sort();
+
+  // Environments running but node is unreachable
+  const degraded = environments.filter(e => {
+    if (e.status !== "running") return false;
+    const node = nodes.find(n => n.environment_id === e.id);
+    return node && node.status === "unreachable";
+  }).length;
 
   const stats = [
     { label: "Active", value: active, color: "text-emerald-400", tab: "environments" as Tab },
     { label: "Queued", value: queued, color: "text-sky-400", tab: "environments" as Tab },
     { label: "Failed", value: failed, color: "text-red-400", tab: "environments" as Tab },
     { label: "Expiring soon", value: expiring, color: "text-amber-400", tab: "environments" as Tab },
-    { label: "Nodes online", value: onlineNodes, color: "text-teal-400", tab: "nodes" as Tab },
-    { label: "Unreachable", value: unreachableNodes, color: "text-red-500", tab: "nodes" as Tab },
+    { label: "Node lost", value: degraded, color: "text-red-400", tab: "nodes" as Tab },
   ];
 
   const recentDeployments = deployments.slice(0, 5);
@@ -198,7 +206,7 @@ function DashboardTab({
       {/* Stats */}
       <div>
         <SectionHeader>Overview</SectionHeader>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
           {stats.map(s => (
             <Card
               key={s.label}
@@ -247,14 +255,22 @@ function DashboardTab({
       {/* Providers */}
       <div>
         <SectionHeader>Providers</SectionHeader>
-        <div className="grid grid-cols-2 gap-3">
-          {["oracle", "hetzner"].map(p => {
-            const count = environments.filter(e => e.provider === p && e.status === "running").length;
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          {allProviders.map(p => {
+            const running = environments.filter(e => e.provider === p && e.status === "running").length;
+            const total = environments.filter(e => e.provider === p).length;
+            const hasUnreachable = nodes.some(n => n.provider === p && n.status === "unreachable");
             return (
-              <Card key={p} className="p-5">
-                <div className="flex items-center justify-between">
+              <Card key={p} className="p-4">
+                <div className="flex items-center justify-between mb-2">
                   <p className="font-mono text-sm text-neutral-300">{p}</p>
-                  <span className="text-xs text-neutral-600">{count} running</span>
+                  {hasUnreachable && (
+                    <span className="text-[10px] text-red-400 font-mono">node lost</span>
+                  )}
+                </div>
+                <div className="flex gap-3 text-xs text-neutral-600">
+                  <span>{running} running</span>
+                  {total > running && <span>{total - running} other</span>}
                 </div>
               </Card>
             );
@@ -390,6 +406,31 @@ function EnvironmentsTab({
               {/* Expanded: outputs */}
               {expanded === env.id && (
                 <div className="border-t border-neutral-800/60 px-5 py-4 bg-neutral-950/80">
+                  {/* TTL bar */}
+                  {env.status === "running" && (() => {
+                    const expiresAt = new Date(env.created_at).getTime() + env.ttl_hours * 3600000;
+                    const totalMs = env.ttl_hours * 3600000;
+                    const remainingMs = Math.max(0, expiresAt - Date.now());
+                    const pct = Math.round((remainingMs / totalMs) * 100);
+                    const isExpiringSoon = remainingMs < 3 * 3600000;
+                    return (
+                      <div className="mb-4">
+                        <div className="flex justify-between text-[11px] font-mono mb-1.5">
+                          <span className="text-neutral-700 uppercase tracking-wider">Lifetime</span>
+                          <span className={isExpiringSoon ? "text-amber-400" : "text-neutral-500"}>
+                            {ttlRemaining(env.created_at, env.ttl_hours)}
+                          </span>
+                        </div>
+                        <div className="h-1 bg-neutral-800 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all ${isExpiringSoon ? "bg-amber-400" : "bg-emerald-500"}`}
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   {outputs[env.id] === undefined ? (
                     <p className="text-xs text-neutral-700 font-mono">loading outputs...</p>
                   ) : outputs[env.id].length === 0 ? (
@@ -562,10 +603,21 @@ function NewEnvironmentTab({
   const [name, setName] = useState("");
   const [provider, setProvider] = useState("hetzner");
   const [inputValues, setInputValues] = useState<Record<string, any>>({});
+  const [ttlHours, setTtlHours] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const tmpl = templates.find(t => t.id === selectedTemplate);
+  const effectiveTtl = ttlHours ?? tmpl?.default_ttl_hours ?? 72;
+
+  const TTL_OPTIONS = [
+    { label: "1h", value: 1 },
+    { label: "6h", value: 6 },
+    { label: "24h", value: 24 },
+    { label: "72h", value: 72 },
+    { label: "7d", value: 168 },
+    { label: "∞", value: 8760 },
+  ];
 
   async function create() {
     if (!name.trim() || !tmpl) return;
@@ -658,6 +710,31 @@ function NewEnvironmentTab({
             </select>
           </div>
 
+          {/* TTL selector */}
+          <div>
+            <label className="text-xs text-neutral-600 font-mono block mb-1.5">
+              Lifetime
+            </label>
+            <div className="flex gap-2 flex-wrap">
+              {TTL_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => setTtlHours(opt.value)}
+                  className={`px-3 py-2 rounded-lg text-sm font-mono transition-colors ${
+                    effectiveTtl === opt.value
+                      ? "bg-white text-black"
+                      : "bg-neutral-900 border border-neutral-800 text-neutral-500 hover:border-neutral-600"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-neutral-700 font-mono mt-1.5">
+              {effectiveTtl >= 8760 ? "no auto-destroy" : `auto-destroy after ${effectiveTtl}h`}
+            </p>
+          </div>
+
           {tmpl?.inputs?.map(input => (
             <div key={input.key}>
               <label className="text-xs text-neutral-600 font-mono block mb-1.5">{input.label}</label>
@@ -685,10 +762,9 @@ function NewEnvironmentTab({
         </div>
       </div>
 
-      {/* TTL info */}
       {tmpl && (
         <p className="text-xs text-neutral-700 font-mono">
-          TTL: {tmpl.default_ttl_hours}h · region: {tmpl.default_region}
+          region: {tmpl.default_region}
         </p>
       )}
 
@@ -854,7 +930,12 @@ export default function App() {
               )}
               {t.id === "nodes" && nodes.filter(n => n.status === "unreachable").length > 0 && (
                 <span className="ml-2 text-[10px] bg-red-400/15 text-red-400 rounded-full px-1.5 py-0.5">
-                  {nodes.filter(n => n.status === "unreachable").length}
+                  {nodes.filter(n => n.status === "unreachable").length} down
+                </span>
+              )}
+              {t.id === "nodes" && nodes.filter(n => n.status === "unreachable").length === 0 && nodes.length > 0 && (
+                <span className="ml-2 text-[10px] bg-emerald-400/15 text-emerald-400 rounded-full px-1.5 py-0.5">
+                  {nodes.filter(n => n.status === "online").length}
                 </span>
               )}
             </button>
@@ -867,6 +948,7 @@ export default function App() {
             environments={environments}
             deployments={deployments}
             nodes={nodes}
+            templates={templates}
             onNavigate={setTab}
           />
         )}
