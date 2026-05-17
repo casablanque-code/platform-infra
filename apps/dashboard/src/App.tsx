@@ -47,6 +47,17 @@ type DeploymentEvent = {
   created_at: string;
 };
 
+type Action = {
+  id: string;
+  environment_id: string;
+  environment_name: string;
+  type: string;
+  status: string;
+  params: string | null;
+  created_at: string;
+  finished_at: string | null;
+};
+
 type EnvironmentOutput = {
   output_key: string;
   output_value: string;
@@ -332,6 +343,8 @@ function EnvironmentsTab({
   const [expanded, setExpanded] = useState<string | null>(null);
   const [outputs, setOutputs] = useState<Record<string, EnvironmentOutput[]>>({});
   const [confirming, setConfirming] = useState<{ id: string; action: "destroy" | "delete" } | null>(null);
+  const [actions, setActions] = useState<Record<string, Action[]>>({});
+  const [runningAction, setRunningAction] = useState<Record<string, boolean>>({});
 
   const statuses = ["all", "running", "queued", "dispatching", "failed", "destroyed"];
 
@@ -345,10 +358,29 @@ function EnvironmentsTab({
     setOutputs(prev => ({ ...prev, [envId]: data }));
   }
 
+  async function loadActions(envId: string) {
+    const data = await apiFetch<Action[]>(`/api/environments/${envId}/actions`);
+    setActions(prev => ({ ...prev, [envId]: data }));
+  }
+
   function toggleExpanded(id: string) {
     const next = expanded === id ? null : id;
     setExpanded(next);
-    if (next) loadOutputs(next);
+    if (next) {
+      loadOutputs(next);
+      loadActions(next);
+    }
+  }
+
+  async function runAction(envId: string, type: string, params?: Record<string, any>) {
+    setRunningAction(prev => ({ ...prev, [envId]: true }));
+    await apiFetch(`/api/environments/${envId}/actions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type, params }),
+    });
+    await loadActions(envId);
+    setRunningAction(prev => ({ ...prev, [envId]: false }));
   }
 
   async function doDestroy(id: string) {
@@ -516,6 +548,48 @@ function EnvironmentsTab({
                             </div>
                           ))}
                         </div>
+                      </div>
+                    )}
+
+                    {/* Runtime actions */}
+                    {env.status === "running" && (
+                      <div>
+                        <p className="text-[11px] uppercase tracking-[0.2em] text-neutral-700 font-mono mb-3">Actions</p>
+                        <div className="flex gap-2 flex-wrap">
+                          {[
+                            { type: "reboot", label: "reboot", color: "text-amber-400 border-amber-900/40 hover:bg-amber-950/30" },
+                            { type: "run_script", label: "run playbook", color: "text-sky-400 border-sky-900/40 hover:bg-sky-950/30" },
+                            { type: "redeploy", label: "redeploy", color: "text-violet-400 border-violet-900/40 hover:bg-violet-950/30" },
+                          ].map(a => (
+                            <button
+                              key={a.type}
+                              disabled={!!runningAction[env.id]}
+                              onClick={() => runAction(env.id, a.type)}
+                              className={`text-xs px-3 py-1.5 rounded-lg border font-mono transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${a.color}`}
+                            >
+                              {runningAction[env.id] ? "..." : a.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* Recent actions */}
+                        {actions[env.id]?.length > 0 && (
+                          <div className="mt-3 space-y-1">
+                            {actions[env.id].slice(0, 3).map(a => (
+                              <div key={a.id} className="flex items-center gap-3 text-xs font-mono">
+                                <span className={`${
+                                  a.status === "success" ? "text-emerald-400"
+                                  : a.status === "failed" ? "text-red-400"
+                                  : a.status === "skipped" ? "text-neutral-600"
+                                  : "text-amber-400"
+                                }`}>●</span>
+                                <span className="text-neutral-500">{a.type}</span>
+                                <span className="text-neutral-700">{timeAgo(a.created_at)}</span>
+                                <span className="text-neutral-700">{a.status}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
 

@@ -1,0 +1,146 @@
+name: Run Action
+
+on:
+  workflow_dispatch:
+    inputs:
+      action_id:
+        required: true
+        type: string
+
+      environment_id:
+        required: true
+        type: string
+
+      environment_name:
+        required: true
+        type: string
+
+      action_type:
+        required: true
+        type: string
+        # reboot | redeploy | run_script
+
+      public_ip:
+        required: true
+        type: string
+
+      ssh_port:
+        required: false
+        type: string
+        default: "22"
+
+      params:
+        required: false
+        type: string
+        default: "{}"
+
+jobs:
+  run-action:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Notify action started
+        run: |
+          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/event" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
+            -d '{"type":"started","message":"Action workflow started"}'
+
+      # ── Mock detection ────────────────────────────────────────────────────────
+      - name: Check if mock IP
+        id: mock
+        run: |
+          IP="${{ inputs.public_ip }}"
+          if echo "$IP" | grep -q "^203\.0\.113\."; then
+            echo "is_mock=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_mock=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Skip action (mock IP)
+        if: steps.mock.outputs.is_mock == 'true'
+        run: |
+          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/event" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
+            -d "{\"type\":\"skipped\",\"message\":\"Mock IP detected — ${{ inputs.action_type }} skipped\"}"
+          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/complete" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}"
+
+      # ── SSH setup ─────────────────────────────────────────────────────────────
+      - name: Setup SSH key
+        if: steps.mock.outputs.is_mock == 'false'
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.BOOTSTRAP_SSH_KEY }}" > ~/.ssh/action_key
+          chmod 600 ~/.ssh/action_key
+          cat >> ~/.ssh/config << EOF
+          Host ${{ inputs.public_ip }}
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            IdentityFile ~/.ssh/action_key
+            Port ${{ inputs.ssh_port }}
+          EOF
+
+      # ── reboot ────────────────────────────────────────────────────────────────
+      - name: Reboot
+        if: steps.mock.outputs.is_mock == 'false' && inputs.action_type == 'reboot'
+        env:
+          SSH_OPTS: "-o StrictHostKeyChecking=no -i ~/.ssh/action_key -p ${{ inputs.ssh_port }}"
+          TARGET: "deploy@${{ inputs.public_ip }}"
+        run: |
+          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/event" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
+            -d '{"type":"rebooting","message":"Sending reboot command"}'
+          ssh $SSH_OPTS $TARGET "sudo reboot" || true
+
+      # ── run_script ────────────────────────────────────────────────────────────
+      - name: Run script
+        if: steps.mock.outputs.is_mock == 'false' && inputs.action_type == 'run_script'
+        env:
+          SSH_OPTS: "-o StrictHostKeyChecking=no -i ~/.ssh/action_key -p ${{ inputs.ssh_port }}"
+          TARGET: "deploy@${{ inputs.public_ip }}"
+        run: |
+          SCRIPT=$(echo '${{ inputs.params }}' | jq -r '.script // empty')
+          if [ -z "$SCRIPT" ]; then
+            echo "No script specified in params"; exit 1
+          fi
+          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/event" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
+            -d "{\"type\":\"running_script\",\"message\":\"Running $SCRIPT\"}"
+          scp $SSH_OPTS "$SCRIPT" "$TARGET:/tmp/$(basename $SCRIPT)"
+          ssh $SSH_OPTS "$TARGET" \
+            "CONTROL_PLANE_URL=${{ secrets.CONTROL_PLANE_URL }} \
+             CALLBACK_TOKEN=${{ secrets.CALLBACK_TOKEN }} \
+             ENVIRONMENT_ID=${{ inputs.environment_id }} \
+             chmod +x /tmp/$(basename $SCRIPT) && /tmp/$(basename $SCRIPT)"
+
+      # ── redeploy ──────────────────────────────────────────────────────────────
+      - name: Redeploy
+        if: steps.mock.outputs.is_mock == 'false' && inputs.action_type == 'redeploy'
+        run: |
+          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/environments/${{ inputs.environment_id }}/redeploy" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}"
+
+      # ── Complete ──────────────────────────────────────────────────────────────
+      - name: Complete action
+        if: steps.mock.outputs.is_mock == 'false'
+        run: |
+          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/complete" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}"
+
+      - name: Notify failure
+        if: failure()
+        run: |
+          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/event" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
+            -d '{"type":"failed","message":"Action workflow failed — check GitHub Actions logs"}'

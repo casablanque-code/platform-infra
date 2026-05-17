@@ -13,6 +13,7 @@ type Env = {
   GITHUB_REPO: string;
   GITHUB_WORKFLOW: string;
   GITHUB_DESTROY_WORKFLOW: string;
+  GITHUB_ACTION_WORKFLOW: string;
   GITHUB_REF: string;
 };
 
@@ -1189,6 +1190,128 @@ app.get("/api/nodes/:id", async (c) => {
 app.delete("/api/nodes/:id", async (c) => {
   const { id } = c.req.param();
   await c.env.DB.prepare(`DELETE FROM nodes WHERE id = ?`).bind(id).run();
+  return c.json({ ok: true });
+});
+
+// ── Runtime actions ───────────────────────────────────────────────────────────
+
+app.post("/api/environments/:id/actions", async (c) => {
+  const { id } = c.req.param();
+
+  const body = await c.req.json<{
+    type: "reboot" | "redeploy" | "run_script";
+    params?: Record<string, any>;
+  }>();
+
+  if (!body.type) return c.json({ error: "type required" }, 400);
+
+  const environment = await c.env.DB.prepare(
+    `SELECT id, name, provider, region, template FROM environments WHERE id = ?`
+  )
+    .bind(id)
+    .first<{ id: string; name: string; provider: string; region: string; template: string }>();
+
+  if (!environment) return c.json({ error: "environment not found" }, 404);
+
+  // Get public_ip from outputs
+  const ipOutput = await c.env.DB.prepare(
+    `SELECT output_value FROM deployment_outputs WHERE environment_id = ? AND output_key = 'public_ip' LIMIT 1`
+  )
+    .bind(id)
+    .first<{ output_value: string }>();
+
+  const sshPortOutput = await c.env.DB.prepare(
+    `SELECT output_value FROM deployment_outputs WHERE environment_id = ? AND output_key = 'ssh_port' LIMIT 1`
+  )
+    .bind(id)
+    .first<{ output_value: string }>();
+
+  const actionId = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  await c.env.DB.prepare(`
+    INSERT INTO actions (id, environment_id, environment_name, type, status, params, created_at)
+    VALUES (?, ?, ?, ?, 'queued', ?, ?)
+  `)
+    .bind(
+      actionId,
+      id,
+      environment.name,
+      body.type,
+      body.params ? JSON.stringify(body.params) : null,
+      now
+    )
+    .run();
+
+  // Dispatch GitHub Actions workflow
+  const response = await fetch(
+    `https://api.github.com/repos/${c.env.GITHUB_OWNER}/${c.env.GITHUB_REPO}/actions/workflows/${c.env.GITHUB_ACTION_WORKFLOW}/dispatches`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${c.env.GITHUB_TOKEN}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "User-Agent": "platform-infra-control-plane",
+      },
+      body: JSON.stringify({
+        ref: c.env.GITHUB_REF,
+        inputs: {
+          action_id: actionId,
+          environment_id: id,
+          environment_name: environment.name,
+          action_type: body.type,
+          public_ip: ipOutput?.output_value?.replace(/"/g, "") ?? "203.0.113.10",
+          ssh_port: sshPortOutput?.output_value?.replace(/"/g, "") ?? "22",
+          params: body.params ? JSON.stringify(body.params) : "{}",
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const err = await response.text();
+    await c.env.DB.prepare(`UPDATE actions SET status = 'failed' WHERE id = ?`).bind(actionId).run();
+    return c.json({ error: "dispatch failed", details: err }, 500);
+  }
+
+  await c.env.DB.prepare(`UPDATE actions SET status = 'dispatched' WHERE id = ?`).bind(actionId).run();
+
+  return c.json({ ok: true, action_id: actionId });
+});
+
+app.get("/api/environments/:id/actions", async (c) => {
+  const { id } = c.req.param();
+  const { results } = await c.env.DB.prepare(
+    `SELECT * FROM actions WHERE environment_id = ? ORDER BY created_at DESC LIMIT 20`
+  )
+    .bind(id)
+    .all<Action>();
+  return c.json(results);
+});
+
+app.post("/api/actions/:id/event", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const { id } = c.req.param();
+  const body = await c.req.json<{ type: string; message?: string }>();
+  await c.env.DB.prepare(`UPDATE actions SET status = ? WHERE id = ?`).bind(body.type, id).run();
+  return c.json({ ok: true });
+});
+
+app.post("/api/actions/:id/complete", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const { id } = c.req.param();
+  await c.env.DB.prepare(
+    `UPDATE actions SET status = 'success', finished_at = ? WHERE id = ?`
+  )
+    .bind(new Date().toISOString(), id)
+    .run();
   return c.json({ ok: true });
 });
 
