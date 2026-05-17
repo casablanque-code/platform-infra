@@ -37,6 +37,19 @@ type PlatformTemplate = {
   inputs?: TemplateInput[];
 };
 
+type Node = {
+  id: string;
+  environment_id: string;
+  environment_name: string;
+  provider: string;
+  hostname: string | null;
+  public_ip: string | null;
+  agent_version: string | null;
+  status: string;
+  first_seen_at: string;
+  last_seen_at: string;
+};
+
 const templates: PlatformTemplate[] = [
   {
     id: "docker-host",
@@ -1035,6 +1048,159 @@ app.notFound(async (c) => {
 export default {
   fetch: app.fetch,
 
+// ── Node check-in ──────────────────────────────────────────────────────────────
+
+app.post("/api/nodes/checkin", async (c) => {
+  const authHeader = c.req.header("Authorization");
+
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const body = await c.req.json<{
+    environment_id: string;
+    hostname?: string;
+    public_ip?: string;
+    agent_version?: string;
+  }>();
+
+  if (!body.environment_id) {
+    return c.json({ error: "environment_id required" }, 400);
+  }
+
+  const environment = await c.env.DB.prepare(
+    `SELECT id, name, provider FROM environments WHERE id = ?`
+  )
+    .bind(body.environment_id)
+    .first<{ id: string; name: string; provider: string }>();
+
+  if (!environment) {
+    return c.json({ error: "environment not found" }, 404);
+  }
+
+  const now = new Date().toISOString();
+
+  // Upsert — update if exists, insert if first check-in
+  const existing = await c.env.DB.prepare(
+    `SELECT id FROM nodes WHERE environment_id = ?`
+  )
+    .bind(body.environment_id)
+    .first<{ id: string }>();
+
+  if (existing) {
+    await c.env.DB.prepare(`
+      UPDATE nodes
+      SET
+        hostname = ?,
+        public_ip = ?,
+        agent_version = ?,
+        status = 'online',
+        last_seen_at = ?
+      WHERE environment_id = ?
+    `)
+      .bind(
+        body.hostname ?? null,
+        body.public_ip ?? null,
+        body.agent_version ?? null,
+        now,
+        body.environment_id
+      )
+      .run();
+
+    return c.json({ ok: true, node_id: existing.id, action: "updated" });
+  }
+
+  const nodeId = crypto.randomUUID();
+
+  await c.env.DB.prepare(`
+    INSERT INTO nodes (
+      id,
+      environment_id,
+      environment_name,
+      provider,
+      hostname,
+      public_ip,
+      agent_version,
+      status,
+      first_seen_at,
+      last_seen_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'online', ?, ?)
+  `)
+    .bind(
+      nodeId,
+      body.environment_id,
+      environment.name,
+      environment.provider,
+      body.hostname ?? null,
+      body.public_ip ?? null,
+      body.agent_version ?? null,
+      now,
+      now
+    )
+    .run();
+
+  return c.json({ ok: true, node_id: nodeId, action: "created" });
+});
+
+app.get("/api/nodes", async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT * FROM nodes ORDER BY last_seen_at DESC`
+  ).all<Node>();
+
+  return c.json(results);
+});
+
+app.get("/api/nodes/:id", async (c) => {
+  const { id } = c.req.param();
+
+  const node = await c.env.DB.prepare(
+    `SELECT * FROM nodes WHERE id = ?`
+  )
+    .bind(id)
+    .first<Node>();
+
+  if (!node) return c.json({ error: "not found" }, 404);
+
+  return c.json(node);
+});
+
+// ── reconcileNodeHealth ────────────────────────────────────────────────────────
+
+async function reconcileNodeHealth(env: Env) {
+  const UNREACHABLE_AFTER_MINUTES = 10;
+  const cutoff = new Date(
+    Date.now() - UNREACHABLE_AFTER_MINUTES * 60 * 1000
+  ).toISOString();
+
+  // Mark nodes unreachable if last_seen_at is too old
+  const gone = await env.DB.prepare(`
+    UPDATE nodes
+    SET status = 'unreachable'
+    WHERE status = 'online'
+      AND last_seen_at < ?
+    RETURNING id, environment_name
+  `)
+    .bind(cutoff)
+    .all<{ id: string; environment_name: string }>();
+
+  // Mark nodes back online if they checked in recently
+  const recovered = await env.DB.prepare(`
+    UPDATE nodes
+    SET status = 'online'
+    WHERE status = 'unreachable'
+      AND last_seen_at >= ?
+    RETURNING id, environment_name
+  `)
+    .bind(cutoff)
+    .all<{ id: string; environment_name: string }>();
+
+  return {
+    unreachable: gone.results.length,
+    recovered: recovered.results.length,
+  };
+}
+
   async scheduled(
     controller: ScheduledController,
     env: Env,
@@ -1055,6 +1221,10 @@ export default {
     const syncResult = await syncGithubRuns(env);
   
     console.log("github sync", JSON.stringify(syncResult));
+
+    const nodeHealthResult = await reconcileNodeHealth(env);
+
+    console.log("node health", JSON.stringify(nodeHealthResult));
   }
   
 };

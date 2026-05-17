@@ -26,6 +26,19 @@ type Deployment = {
   finished_at: string | null;
 };
 
+type Node = {
+  id: string;
+  environment_id: string;
+  environment_name: string;
+  provider: string;
+  hostname: string | null;
+  public_ip: string | null;
+  agent_version: string | null;
+  status: string;
+  first_seen_at: string;
+  last_seen_at: string;
+};
+
 type DeploymentEvent = {
   id: string;
   type: string;
@@ -58,7 +71,7 @@ type PlatformTemplate = {
   inputs?: TemplateInput[];
 };
 
-type Tab = "dashboard" | "environments" | "deployments" | "new";
+type Tab = "dashboard" | "environments" | "deployments" | "nodes" | "new";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -149,10 +162,12 @@ function EmptyState({ label }: { label: string }) {
 function DashboardTab({
   environments,
   deployments,
+  nodes,
   onNavigate,
 }: {
   environments: Environment[];
   deployments: Deployment[];
+  nodes: Node[];
   onNavigate: (tab: Tab) => void;
 }) {
   const active = environments.filter(e => e.status === "running").length;
@@ -164,11 +179,16 @@ function DashboardTab({
     return remaining > 0 && remaining < 3 * 3600000;
   }).length;
 
+  const onlineNodes = nodes.filter(n => n.status === "online").length;
+  const unreachableNodes = nodes.filter(n => n.status === "unreachable").length;
+
   const stats = [
     { label: "Active", value: active, color: "text-emerald-400", tab: "environments" as Tab },
     { label: "Queued", value: queued, color: "text-sky-400", tab: "environments" as Tab },
     { label: "Failed", value: failed, color: "text-red-400", tab: "environments" as Tab },
     { label: "Expiring soon", value: expiring, color: "text-amber-400", tab: "environments" as Tab },
+    { label: "Nodes online", value: onlineNodes, color: "text-teal-400", tab: "nodes" as Tab },
+    { label: "Unreachable", value: unreachableNodes, color: "text-red-500", tab: "nodes" as Tab },
   ];
 
   const recentDeployments = deployments.slice(0, 5);
@@ -178,7 +198,7 @@ function DashboardTab({
       {/* Stats */}
       <div>
         <SectionHeader>Overview</SectionHeader>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
           {stats.map(s => (
             <Card
               key={s.label}
@@ -689,6 +709,75 @@ function NewEnvironmentTab({
   );
 }
 
+// ─── Nodes Tab ────────────────────────────────────────────────────────────────
+
+function NodesTab({ nodes }: { nodes: Node[] }) {
+  function nodeStatusColor(status: string) {
+    if (status === "online") return "text-emerald-400 bg-emerald-400/10 border-emerald-400/30";
+    if (status === "unreachable") return "text-red-400 bg-red-400/10 border-red-400/30";
+    return "text-neutral-500 bg-neutral-500/10 border-neutral-500/30";
+  }
+
+  return (
+    <div className="space-y-5">
+      {nodes.length === 0 ? (
+        <div className="text-center py-20">
+          <p className="text-neutral-700 font-mono text-sm mb-2">no nodes registered yet</p>
+          <p className="text-neutral-800 font-mono text-xs">
+            nodes appear here after a successful bootstrap
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {nodes.map(node => (
+            <Card key={node.id} className="p-5">
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div className="space-y-1 min-w-0">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <p className="font-medium text-neutral-100">
+                      {node.hostname ?? node.environment_name}
+                    </p>
+                    <span className={`inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider px-2.5 py-1 rounded-full border ${nodeStatusColor(node.status)}`}>
+                      {node.status === "online" && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
+                      )}
+                      {node.status}
+                    </span>
+                  </div>
+                  <p className="text-xs text-neutral-600 font-mono">
+                    {node.provider} · {node.public_ip ?? "no ip"}
+                    {node.agent_version && ` · v${node.agent_version}`}
+                  </p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="text-xs text-neutral-700 font-mono">
+                    last seen {timeAgo(node.last_seen_at)}
+                  </p>
+                  <p className="text-xs text-neutral-800 font-mono mt-1">
+                    since {timeAgo(node.first_seen_at)}
+                  </p>
+                </div>
+              </div>
+
+              {/* IDs */}
+              <div className="mt-4 pt-3 border-t border-neutral-800/60 flex gap-6 flex-wrap">
+                <div>
+                  <p className="text-[10px] text-neutral-700 font-mono uppercase tracking-wider mb-1">Node ID</p>
+                  <p className="text-[11px] font-mono text-neutral-600">{node.id}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-neutral-700 font-mono uppercase tracking-wider mb-1">Environment</p>
+                  <p className="text-[11px] font-mono text-neutral-600">{node.environment_id}</p>
+                </div>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Root App ─────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -697,15 +786,19 @@ export default function App() {
   const [environments, setEnvironments] = useState<Environment[]>([]);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
 
+  const [nodes, setNodes] = useState<Node[]>([]);
+
   const loadAll = useCallback(async () => {
-    const [tmpl, envs, deps] = await Promise.all([
+    const [tmpl, envs, deps, nds] = await Promise.all([
       apiFetch<PlatformTemplate[]>("/api/templates"),
       apiFetch<Environment[]>("/api/environments"),
       apiFetch<Deployment[]>("/api/deployments"),
+      apiFetch<Node[]>("/api/nodes"),
     ]);
     setTemplates(tmpl);
     setEnvironments(envs);
     setDeployments(deps);
+    setNodes(nds);
   }, []);
 
   useEffect(() => {
@@ -718,6 +811,7 @@ export default function App() {
     { id: "dashboard", label: "Dashboard" },
     { id: "environments", label: "Environments" },
     { id: "deployments", label: "Deployments" },
+    { id: "nodes", label: "Nodes" },
     { id: "new", label: "New" },
   ];
 
@@ -758,6 +852,11 @@ export default function App() {
                   {deployments.filter(d => d.status === "dispatching").length}
                 </span>
               )}
+              {t.id === "nodes" && nodes.filter(n => n.status === "unreachable").length > 0 && (
+                <span className="ml-2 text-[10px] bg-red-400/15 text-red-400 rounded-full px-1.5 py-0.5">
+                  {nodes.filter(n => n.status === "unreachable").length}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -767,6 +866,7 @@ export default function App() {
           <DashboardTab
             environments={environments}
             deployments={deployments}
+            nodes={nodes}
             onNavigate={setTab}
           />
         )}
@@ -778,6 +878,9 @@ export default function App() {
         )}
         {tab === "deployments" && (
           <DeploymentsTab deployments={deployments} />
+        )}
+        {tab === "nodes" && (
+          <NodesTab nodes={nodes} />
         )}
         {tab === "new" && (
           <NewEnvironmentTab

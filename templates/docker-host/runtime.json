@@ -17,6 +17,7 @@
 
   "post_provision": [
     { "type": "ssh_script", "script": "bootstrap/base.sh" },
-    { "type": "ssh_script", "script": "bootstrap/docker.sh" }
+    { "type": "ssh_script", "script": "bootstrap/docker.sh" },
+    { "type": "ssh_script", "script": "bootstrap/checkin.sh" }
   ]
 }
