@@ -84,8 +84,10 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function statusColor(status: string) {
-  if (status === "running" || status === "success" || status === "destroyed")
+  if (status === "running" || status === "success")
     return { text: "text-emerald-400", bg: "bg-emerald-400/10", border: "border-emerald-400/25" };
+  if (status === "destroyed")
+    return { text: "text-neutral-500", bg: "bg-neutral-500/10", border: "border-neutral-500/25" };
   if (status === "queued")
     return { text: "text-sky-400", bg: "bg-sky-400/10", border: "border-sky-400/25" };
   if (status === "dispatching" || status === "workflow_dispatched")
