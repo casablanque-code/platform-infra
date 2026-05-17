@@ -192,6 +192,23 @@ app.get("/api/environments/:id/outputs", async (c) => {
 app.delete("/api/environments/:id", async (c) => {
   const id = c.req.param("id");
 
+  // Only allow delete if environment is destroyed or permanently failed
+  const env = await c.env.DB.prepare(
+    `SELECT status FROM environments WHERE id = ?`
+  )
+    .bind(id)
+    .first<{ status: string }>();
+
+  if (!env) return c.json({ error: "not found" }, 404);
+
+  const deletableStatuses = ["destroyed", "failed_permanent"];
+  if (!deletableStatuses.includes(env.status)) {
+    return c.json(
+      { error: "destroy the environment before deleting it" },
+      409
+    );
+  }
+
   const deployments = await c.env.DB.prepare(`
     SELECT id
     FROM deployments

@@ -446,12 +446,23 @@ function EnvironmentsTab({
                             destroy
                           </button>
                         )}
-                        <button
-                          onClick={e => { e.stopPropagation(); setConfirming({ id: env.id, action: "delete" }); }}
-                          className="text-xs px-3 py-1.5 rounded-lg border border-red-900/50 text-red-500 hover:bg-red-950/40 transition-colors"
-                        >
-                          delete
-                        </button>
+                        {(() => {
+                          const canDelete = ["destroyed", "failed_permanent"].includes(env.status);
+                          return (
+                            <button
+                              onClick={e => { e.stopPropagation(); if (canDelete) setConfirming({ id: env.id, action: "delete" }); }}
+                              disabled={!canDelete}
+                              title={canDelete ? undefined : "destroy first"}
+                              className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+                                canDelete
+                                  ? "border-red-900/50 text-red-500 hover:bg-red-950/40"
+                                  : "border-neutral-800 text-neutral-700 cursor-not-allowed"
+                              }`}
+                            >
+                              delete
+                            </button>
+                          );
+                        })()}
                       </>
                     )}
 
