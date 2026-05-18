@@ -345,6 +345,8 @@ function EnvironmentsTab({
   const [confirming, setConfirming] = useState<{ id: string; action: "destroy" | "delete" } | null>(null);
   const [actions, setActions] = useState<Record<string, Action[]>>({});
   const [runningAction, setRunningAction] = useState<Record<string, boolean>>({});
+  const [playbookOpen, setPlaybookOpen] = useState<string | null>(null);
+  const [selectedPlaybook, setSelectedPlaybook] = useState<Record<string, string>>({});
 
   const statuses = ["all", "running", "queued", "dispatching", "failed", "destroyed"];
 
@@ -504,7 +506,10 @@ function EnvironmentsTab({
 
                 {/* Expanded */}
                 {isExpanded && (
-                  <div className="border-t border-neutral-800/50 px-5 py-4 bg-neutral-950/60 space-y-4">
+                  <div
+                    className="border-t border-neutral-800/50 px-5 py-4 bg-neutral-950/60 space-y-4"
+                    onClick={() => setPlaybookOpen(null)}
+                  >
                     {/* TTL bar */}
                     {env.status === "running" && ttl.label !== "no auto-destroy" && (
                       <div>
@@ -552,46 +557,122 @@ function EnvironmentsTab({
                     )}
 
                     {/* Runtime actions */}
-                    {env.status === "running" && (
-                      <div>
-                        <p className="text-[11px] uppercase tracking-[0.2em] text-neutral-700 font-mono mb-3">Actions</p>
-                        <div className="flex gap-2 flex-wrap">
-                          {[
-                            { type: "reboot", label: "reboot", color: "text-amber-400 border-amber-900/40 hover:bg-amber-950/30" },
-                            { type: "run_script", label: "run playbook", color: "text-sky-400 border-sky-900/40 hover:bg-sky-950/30" },
-                            { type: "redeploy", label: "redeploy", color: "text-violet-400 border-violet-900/40 hover:bg-violet-950/30" },
-                          ].map(a => (
-                            <button
-                              key={a.type}
-                              disabled={!!runningAction[env.id]}
-                              onClick={() => runAction(env.id, a.type)}
-                              className={`text-xs px-3 py-1.5 rounded-lg border font-mono transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${a.color}`}
-                            >
-                              {runningAction[env.id] ? "..." : a.label}
-                            </button>
-                          ))}
-                        </div>
+                    {env.status === "running" && (() => {
+                      // Playbooks per template
+                      const PLAYBOOKS: Record<string, { id: string; label: string; desc: string }[]> = {
+                        "docker-host": [
+                          { id: "install_portainer", label: "Install Portainer", desc: "Web UI for Docker management" },
+                          { id: "install_node_exporter", label: "Install Node Exporter", desc: "Prometheus metrics endpoint" },
+                          { id: "install_uptime_kuma", label: "Install Uptime Kuma", desc: "Self-hosted uptime monitoring" },
+                        ],
+                        "postgres": [
+                          { id: "install_pgadmin", label: "Install pgAdmin", desc: "Web UI for PostgreSQL" },
+                          { id: "backup_to_r2", label: "Backup to R2", desc: "Dump database to Cloudflare R2" },
+                        ],
+                      };
+                      const playbooks = PLAYBOOKS[env.template] ?? [];
+                      const currentPlaybook = selectedPlaybook[env.id] ?? playbooks[0]?.id ?? "";
 
-                        {/* Recent actions */}
-                        {actions[env.id]?.length > 0 && (
-                          <div className="mt-3 space-y-1">
-                            {actions[env.id].slice(0, 3).map(a => (
-                              <div key={a.id} className="flex items-center gap-3 text-xs font-mono">
-                                <span className={`${
-                                  a.status === "success" ? "text-emerald-400"
-                                  : a.status === "failed" ? "text-red-400"
-                                  : a.status === "skipped" ? "text-neutral-600"
-                                  : "text-amber-400"
-                                }`}>●</span>
-                                <span className="text-neutral-500">{a.type}</span>
-                                <span className="text-neutral-700">{timeAgo(a.created_at)}</span>
-                                <span className="text-neutral-700">{a.status}</span>
+                      return (
+                        <div>
+                          <p className="text-[11px] uppercase tracking-[0.2em] text-neutral-700 font-mono mb-3">Actions</p>
+                          <div className="flex gap-2 flex-wrap items-start">
+
+                            {/* reboot */}
+                            <button
+                              disabled={!!runningAction[env.id]}
+                              onClick={() => runAction(env.id, "reboot")}
+                              className="text-xs px-3 py-1.5 rounded-lg border font-mono transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-amber-400 border-amber-900/40 hover:bg-amber-950/30"
+                            >
+                              {runningAction[env.id] ? "..." : "reboot"}
+                            </button>
+
+                            {/* run playbook with dropdown */}
+                            {playbooks.length > 0 && (
+                              <div className="relative">
+                                <div className="flex rounded-lg border border-sky-900/40 overflow-hidden">
+                                  {/* Run button */}
+                                  <button
+                                    disabled={!!runningAction[env.id]}
+                                    onClick={() => {
+                                      const pb = playbooks.find(p => p.id === currentPlaybook);
+                                      if (pb) runAction(env.id, "run_script", { script: `bootstrap/${pb.id}.sh` });
+                                    }}
+                                    className="text-xs px-3 py-1.5 font-mono text-sky-400 hover:bg-sky-950/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                  >
+                                    {runningAction[env.id] ? "..." : "run"}
+                                  </button>
+                                  {/* Divider */}
+                                  <div className="w-px bg-sky-900/40" />
+                                  {/* Dropdown toggle */}
+                                  <button
+                                    onClick={e => { e.stopPropagation(); setPlaybookOpen(playbookOpen === env.id ? null : env.id); }}
+                                    className="text-xs px-2 py-1.5 font-mono text-sky-400 hover:bg-sky-950/30 transition-colors flex items-center gap-1"
+                                  >
+                                    <span className="max-w-[120px] truncate text-sky-300/70">
+                                      {playbooks.find(p => p.id === currentPlaybook)?.label ?? "select"}
+                                    </span>
+                                    <span className={`transition-transform duration-150 ${playbookOpen === env.id ? "rotate-180" : ""}`}>▾</span>
+                                  </button>
+                                </div>
+
+                                {/* Dropdown menu */}
+                                {playbookOpen === env.id && (
+                                  <div
+                                    className="absolute top-full left-0 mt-1 z-50 min-w-[220px] bg-neutral-900 border border-neutral-700 rounded-xl overflow-hidden shadow-xl shadow-black/60"
+                                    onClick={e => e.stopPropagation()}
+                                  >
+                                    {playbooks.map((pb, i) => (
+                                      <button
+                                        key={pb.id}
+                                        onClick={() => {
+                                          setSelectedPlaybook(prev => ({ ...prev, [env.id]: pb.id }));
+                                          setPlaybookOpen(null);
+                                        }}
+                                        className={`w-full text-left px-4 py-3 transition-colors hover:bg-neutral-800 ${
+                                          i < playbooks.length - 1 ? "border-b border-neutral-800" : ""
+                                        } ${currentPlaybook === pb.id ? "bg-neutral-800/60" : ""}`}
+                                      >
+                                        <p className="text-xs font-mono text-neutral-200">{pb.label}</p>
+                                        <p className="text-[11px] text-neutral-600 mt-0.5">{pb.desc}</p>
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
-                            ))}
+                            )}
+
+                            {/* redeploy */}
+                            <button
+                              disabled={!!runningAction[env.id]}
+                              onClick={() => runAction(env.id, "redeploy")}
+                              className="text-xs px-3 py-1.5 rounded-lg border font-mono transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-violet-400 border-violet-900/40 hover:bg-violet-950/30"
+                            >
+                              {runningAction[env.id] ? "..." : "redeploy"}
+                            </button>
                           </div>
-                        )}
-                      </div>
-                    )}
+
+                          {/* Recent actions log */}
+                          {actions[env.id]?.length > 0 && (
+                            <div className="mt-3 space-y-1">
+                              {actions[env.id].slice(0, 4).map(a => (
+                                <div key={a.id} className="flex items-center gap-3 text-xs font-mono">
+                                  <span className={
+                                    a.status === "success" ? "text-emerald-400"
+                                    : a.status === "failed" ? "text-red-400"
+                                    : a.status === "skipped" ? "text-neutral-700"
+                                    : "text-amber-400"
+                                  }>●</span>
+                                  <span className="text-neutral-500">{a.type === "run_script" && a.params ? JSON.parse(a.params).script?.split("/").pop()?.replace(".sh","") ?? a.type : a.type}</span>
+                                  <span className="text-neutral-700">{timeAgo(a.created_at)}</span>
+                                  <span className="text-neutral-700">{a.status}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
 
                     {/* UUID */}
                     <p className="text-[10px] font-mono text-neutral-800">{env.id}</p>

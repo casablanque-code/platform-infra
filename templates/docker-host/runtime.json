@@ -19,5 +19,11 @@
     { "type": "ssh_script", "script": "bootstrap/base.sh" },
     { "type": "ssh_script", "script": "bootstrap/docker.sh" },
     { "type": "ssh_script", "script": "bootstrap/checkin.sh" }
+  ],
+
+  "actions": [
+    { "id": "install_portainer",    "label": "Install Portainer",    "script": "bootstrap/install_portainer.sh" },
+    { "id": "install_node_exporter","label": "Install Node Exporter","script": "bootstrap/install_node_exporter.sh" },
+    { "id": "install_uptime_kuma",  "label": "Install Uptime Kuma",  "script": "bootstrap/install_uptime_kuma.sh" }
   ]
 }
