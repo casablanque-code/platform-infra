@@ -66,11 +66,7 @@ jobs:
       - name: Skip action (mock IP)
         if: steps.mock.outputs.is_mock == 'true'
         run: |
-          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/event" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
-            -d "{\"type\":\"skipped\",\"message\":\"Mock IP detected — ${{ inputs.action_type }} skipped\"}"
-          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/complete" \
+          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/complete?status=skipped" \
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}"
 
       # ── SSH setup ─────────────────────────────────────────────────────────────

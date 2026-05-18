@@ -1307,10 +1307,11 @@ app.post("/api/actions/:id/complete", async (c) => {
     return c.json({ error: "unauthorized" }, 401);
   }
   const { id } = c.req.param();
+  const finalStatus = c.req.query("status") ?? "success";
   await c.env.DB.prepare(
-    `UPDATE actions SET status = 'success', finished_at = ? WHERE id = ?`
+    `UPDATE actions SET status = ?, finished_at = ? WHERE id = ?`
   )
-    .bind(new Date().toISOString(), id)
+    .bind(finalStatus, new Date().toISOString(), id)
     .run();
   return c.json({ ok: true });
 });
