@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 
 const API = window.location.origin;
 const LIME = "#CBFF4D";
@@ -193,6 +194,66 @@ function DeleteConfirm({ onConfirm, onCancel, label = "Delete?" }: {
   );
 }
 
+// ─── Playbook Dropdown (portal) ───────────────────────────────────────────────
+
+function PlaybookDropdown({
+  anchorRef,
+  playbooks,
+  selected,
+  onSelect,
+  onClose,
+}: {
+  anchorRef: React.RefObject<HTMLButtonElement | null>;
+  playbooks: { id: string; label: string; desc: string }[];
+  selected: string;
+  onSelect: (id: string) => void;
+  onClose: () => void;
+}) {
+  const [pos, setPos] = useState({ top: 0, left: 0, width: 0 });
+
+  useEffect(() => {
+    if (!anchorRef.current) return;
+    const rect = anchorRef.current.getBoundingClientRect();
+    setPos({
+      top: rect.bottom + window.scrollY + 4,
+      left: rect.left + window.scrollX,
+      width: Math.max(rect.width, 220),
+    });
+  }, [anchorRef]);
+
+  useEffect(() => {
+    const handle = (e: MouseEvent) => {
+      if (anchorRef.current && !anchorRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [onClose, anchorRef]);
+
+  return createPortal(
+    <div
+      style={{ position: "absolute", top: pos.top, left: pos.left, minWidth: pos.width, zIndex: 9999 }}
+      className="bg-neutral-900 border border-neutral-700 rounded-xl overflow-hidden shadow-2xl shadow-black/80"
+      onMouseDown={e => e.stopPropagation()}
+    >
+      {playbooks.map((pb, i) => (
+        <button
+          key={pb.id}
+          onClick={() => { onSelect(pb.id); onClose(); }}
+          className={`w-full text-left px-4 py-3 transition-colors hover:bg-neutral-800 ${
+            i < playbooks.length - 1 ? "border-b border-neutral-800" : ""
+          } ${selected === pb.id ? "bg-neutral-800/60" : ""}`}
+        >
+          <p className="text-xs font-mono text-neutral-200">{pb.label}</p>
+          <p className="text-[11px] text-neutral-600 mt-0.5">{pb.desc}</p>
+        </button>
+      ))}
+    </div>,
+    document.body
+  );
+}
+
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
 function DashboardTab({
@@ -347,6 +408,14 @@ function EnvironmentsTab({
   const [runningAction, setRunningAction] = useState<Record<string, boolean>>({});
   const [playbookOpen, setPlaybookOpen] = useState<string | null>(null);
   const [selectedPlaybook, setSelectedPlaybook] = useState<Record<string, string>>({});
+  const dropdownRefs = useRef<Record<string, React.RefObject<HTMLButtonElement | null>>>({});
+
+  function getDropdownRef(envId: string) {
+    if (!dropdownRefs.current[envId]) {
+      dropdownRefs.current[envId] = { current: null };
+    }
+    return dropdownRefs.current[envId];
+  }
 
   const statuses = ["all", "running", "queued", "dispatching", "failed", "destroyed"];
 
@@ -506,10 +575,7 @@ function EnvironmentsTab({
 
                 {/* Expanded */}
                 {isExpanded && (
-                  <div
-                    className="border-t border-neutral-800/50 px-5 py-4 bg-neutral-950/60 space-y-4"
-                    onClick={() => setPlaybookOpen(null)}
-                  >
+                  <div className="border-t border-neutral-800/50 px-5 py-4 bg-neutral-950/60 space-y-4">
                     {/* TTL bar */}
                     {env.status === "running" && ttl.label !== "no auto-destroy" && (
                       <div>
@@ -606,6 +672,7 @@ function EnvironmentsTab({
                                   <div className="w-px bg-sky-900/40" />
                                   {/* Dropdown toggle */}
                                   <button
+                                    ref={getDropdownRef(env.id) as React.RefObject<HTMLButtonElement>}
                                     onClick={e => { e.stopPropagation(); setPlaybookOpen(playbookOpen === env.id ? null : env.id); }}
                                     className="text-xs px-2 py-1.5 font-mono text-sky-400 hover:bg-sky-950/30 transition-colors flex items-center gap-1"
                                   >
@@ -616,28 +683,15 @@ function EnvironmentsTab({
                                   </button>
                                 </div>
 
-                                {/* Dropdown menu */}
+                                {/* Dropdown via portal — renders above everything */}
                                 {playbookOpen === env.id && (
-                                  <div
-                                    className="absolute top-full left-0 mt-1 z-50 min-w-[220px] bg-neutral-900 border border-neutral-700 rounded-xl overflow-hidden shadow-xl shadow-black/60"
-                                    onClick={e => e.stopPropagation()}
-                                  >
-                                    {playbooks.map((pb, i) => (
-                                      <button
-                                        key={pb.id}
-                                        onClick={() => {
-                                          setSelectedPlaybook(prev => ({ ...prev, [env.id]: pb.id }));
-                                          setPlaybookOpen(null);
-                                        }}
-                                        className={`w-full text-left px-4 py-3 transition-colors hover:bg-neutral-800 ${
-                                          i < playbooks.length - 1 ? "border-b border-neutral-800" : ""
-                                        } ${currentPlaybook === pb.id ? "bg-neutral-800/60" : ""}`}
-                                      >
-                                        <p className="text-xs font-mono text-neutral-200">{pb.label}</p>
-                                        <p className="text-[11px] text-neutral-600 mt-0.5">{pb.desc}</p>
-                                      </button>
-                                    ))}
-                                  </div>
+                                  <PlaybookDropdown
+                                    anchorRef={getDropdownRef(env.id)}
+                                    playbooks={playbooks}
+                                    selected={currentPlaybook}
+                                    onSelect={id => setSelectedPlaybook(prev => ({ ...prev, [env.id]: id }))}
+                                    onClose={() => setPlaybookOpen(null)}
+                                  />
                                 )}
                               </div>
                             )}
