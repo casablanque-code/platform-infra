@@ -706,24 +706,40 @@ function EnvironmentsTab({
                             </button>
                           </div>
 
-                          {/* Recent actions log */}
-                          {actions[env.id]?.length > 0 && (
-                            <div className="mt-3 space-y-1">
-                              {actions[env.id].slice(0, 4).map(a => (
-                                <div key={a.id} className="flex items-center gap-3 text-xs font-mono">
-                                  <span className={
-                                    a.status === "success" ? "text-emerald-400"
-                                    : a.status === "failed" ? "text-red-400"
-                                    : a.status === "skipped" ? "text-neutral-700"
-                                    : "text-amber-400"
-                                  }>●</span>
-                                  <span className="text-neutral-500">{a.type === "run_script" && a.params ? JSON.parse(a.params).script?.split("/").pop()?.replace(".sh","") ?? a.type : a.type}</span>
-                                  <span className="text-neutral-700">{timeAgo(a.created_at)}</span>
-                                  <span className="text-neutral-700">{a.status}</span>
-                                </div>
-                              ))}
-                            </div>
-                          )}
+                          {/* Recent actions log — one per type, latest wins */}
+                          {actions[env.id]?.length > 0 && (() => {
+                            const latest = Object.values(
+                              actions[env.id].reduce((acc, a) => {
+                                const key = a.type === "run_script" && a.params
+                                  ? JSON.parse(a.params).script ?? a.type
+                                  : a.type;
+                                if (!acc[key] || a.created_at > acc[key].created_at) acc[key] = a;
+                                return acc;
+                              }, {} as Record<string, Action>)
+                            );
+                            return (
+                              <div className="mt-3 space-y-1">
+                                {latest.map(a => {
+                                  const label = a.type === "run_script" && a.params
+                                    ? JSON.parse(a.params).script?.split("/").pop()?.replace(".sh","") ?? a.type
+                                    : a.type;
+                                  return (
+                                    <div key={a.id} className="flex items-center gap-3 text-xs font-mono">
+                                      <span className={
+                                        a.status === "success" ? "text-emerald-400"
+                                        : a.status === "failed" ? "text-red-400"
+                                        : a.status === "skipped" ? "text-neutral-700"
+                                        : "text-amber-400"
+                                      }>●</span>
+                                      <span className="text-neutral-500">{label}</span>
+                                      <span className="text-neutral-700">{timeAgo(a.created_at)}</span>
+                                      <span className="text-neutral-700">{a.status}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })()}
                         </div>
                       );
                     })()}
