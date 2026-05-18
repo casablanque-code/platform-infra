@@ -28,7 +28,7 @@ type Deployment = {
   finished_at: string | null;
 };
 
-type Node = {
+type InfraNode = {
   id: string;
   environment_id: string;
   environment_name: string;
@@ -223,7 +223,7 @@ function PlaybookDropdown({
 
   useEffect(() => {
     const handle = (e: MouseEvent) => {
-      if (anchorRef.current && !anchorRef.current.contains(e.target as Node)) {
+      if (anchorRef.current && !anchorRef.current.contains(e.target as globalThis.Node)) {
         onClose();
       }
     };
@@ -261,7 +261,7 @@ function DashboardTab({
 }: {
   environments: Environment[];
   deployments: Deployment[];
-  nodes: Node[];
+  nodes: InfraNode[];
   templates: PlatformTemplate[];
   onNavigate: (tab: Tab) => void;
 }) {
@@ -396,7 +396,7 @@ function EnvironmentsTab({
   environments, nodes, onRefresh,
 }: {
   environments: Environment[];
-  nodes: Node[];
+  nodes: InfraNode[];
   onRefresh: () => void;
 }) {
   const [filter, setFilter] = useState("all");
@@ -875,7 +875,7 @@ function DeploymentsTab({ deployments, onRefresh }: { deployments: Deployment[];
 
 // ─── Nodes ────────────────────────────────────────────────────────────────────
 
-function NodesTab({ nodes, onRefresh }: { nodes: Node[]; onRefresh: () => void }) {
+function NodesTab({ nodes, onRefresh }: { nodes: InfraNode[]; onRefresh: () => void }) {
   const [confirming, setConfirming] = useState<string | null>(null);
 
   async function doDelete(id: string) {
@@ -1154,14 +1154,14 @@ export default function App() {
   const [templates, setTemplates] = useState<PlatformTemplate[]>([]);
   const [environments, setEnvironments] = useState<Environment[]>([]);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
-  const [nodes, setNodes] = useState<Node[]>([]);
+  const [nodes, setNodes] = useState<InfraNode[]>([]);
 
   const loadAll = useCallback(async () => {
     const [tmpl, envs, deps, nds] = await Promise.all([
       apiFetch<PlatformTemplate[]>("/api/templates"),
       apiFetch<Environment[]>("/api/environments"),
       apiFetch<Deployment[]>("/api/deployments"),
-      apiFetch<Node[]>("/api/nodes"),
+      apiFetch<InfraNode[]>("/api/nodes"),
     ]);
     setTemplates(tmpl);
     setEnvironments(envs);
