@@ -72,12 +72,25 @@ type Action = {
   finished_at: string | null;
 };
 
+type AuditEntry = {
+  id: string;
+  actor: string;
+  actor_role: string;
+  action: string;
+  resource_type: string;
+  resource_id: string | null;
+  resource_name: string | null;
+  meta: string | null;
+  created_at: string;
+};
+
 type ApiKey = {
   id: string;
   name: string;
   role: "admin" | "operator" | "viewer";
   created_at: string;
   last_used_at: string | null;
+  expires_at: string | null;
   created_by: string;
 };
 
@@ -106,7 +119,7 @@ type PlatformTemplate = {
   inputs?: TemplateInput[];
 };
 
-type Tab = "dashboard" | "environments" | "deployments" | "nodes" | "create" | "keys";
+type Tab = "dashboard" | "environments" | "deployments" | "nodes" | "create" | "keys" | "audit";
 
 // ─── API ──────────────────────────────────────────────────────────────────────
 
@@ -147,7 +160,7 @@ function StatusPill({ status }: { status: string }) {
 }
 
 function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
+  const diff = Date.now() - parseUTC(iso);
   const m = Math.floor(diff / 60000);
   if (m < 1) return "just now";
   if (m < 60) return `${m}m ago`;
@@ -156,9 +169,16 @@ function timeAgo(iso: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+function parseUTC(iso: string): number {
+  // Ensure UTC parsing even if Z is missing (SQLite datetime quirk)
+  const s = iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z";
+  return new Date(s).getTime();
+}
+
 function ttlInfo(createdAt: string, ttlHours: number): { label: string; pct: number; urgent: boolean } {
   if (!ttlHours || ttlHours >= 8760) return { label: "no auto-destroy", pct: 100, urgent: false };
-  const expiresAt = new Date(createdAt).getTime() + ttlHours * 3600_000;
+  const created = parseUTC(createdAt);
+  const expiresAt = created + ttlHours * 3600_000;
   const totalMs = ttlHours * 3600_000;
   const remainingMs = expiresAt - Date.now();
   if (remainingMs <= 0) return { label: "expired", pct: 0, urgent: true };
@@ -1246,6 +1266,7 @@ function KeysTab() {
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [name, setName] = useState("");
   const [role, setRole] = useState<"operator" | "viewer">("operator");
+  const [expiresInDays, setExpiresInDays] = useState<number | null>(30);
   const [creating, setCreating] = useState(false);
   const [newKey, setNewKey] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
@@ -1261,10 +1282,10 @@ function KeysTab() {
   async function createKey() {
     if (!name.trim()) return;
     setCreating(true);
-    const res = await authFetch<{ ok: boolean; key: string }>("/api/keys", {
+    const res = await authFetch<{ ok: boolean; key: string; expires_at: string | null }>("/api/keys", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.trim(), role }),
+      body: JSON.stringify({ name: name.trim(), role, expires_in_days: expiresInDays }),
     });
     setNewKey(res.key);
     setName("");
@@ -1334,6 +1355,19 @@ function KeysTab() {
               </button>
             ))}
           </div>
+          <div className="flex gap-1.5">
+            {([7, 30, 90, null] as (number | null)[]).map(d => (
+              <button
+                key={d ?? "never"}
+                onClick={() => setExpiresInDays(d)}
+                className={`px-3 py-2 rounded-lg text-xs font-mono transition-colors border ${
+                  expiresInDays === d ? "bg-white text-black border-white" : "border-neutral-800 text-neutral-500 hover:border-neutral-600"
+                }`}
+              >
+                {d ? `${d}d` : "∞"}
+              </button>
+            ))}
+          </div>
           <button
             onClick={createKey}
             disabled={!name.trim() || creating}
@@ -1367,6 +1401,14 @@ function KeysTab() {
                   <p className="text-xs text-neutral-700 font-mono mt-1">
                     created {timeAgo(k.created_at)}
                     {k.last_used_at ? ` · last used ${timeAgo(k.last_used_at)}` : " · never used"}
+                    {k.expires_at && (() => {
+                      const expired = new Date(k.expires_at).getTime() < Date.now();
+                      return (
+                        <span className={expired ? " · text-red-500" : " · text-neutral-600"}>
+                          {expired ? " expired" : ` · expires ${timeAgo(k.expires_at).replace(" ago", "")}`}
+                        </span>
+                      );
+                    })()}
                   </p>
                 </div>
                 {confirming === k.id ? (
@@ -1387,6 +1429,67 @@ function KeysTab() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Audit Tab ───────────────────────────────────────────────────────────────
+
+function AuditTab() {
+  const [entries, setEntries] = useState<AuditEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    authFetch<AuditEntry[]>("/api/audit?limit=100")
+      .then(data => { setEntries(data); setLoading(false); });
+  }, []);
+
+  const ACTION_COLORS: Record<string, string> = {
+    "environment.create": "text-emerald-400",
+    "environment.delete": "text-red-400",
+    "key.create": "text-sky-400",
+    "key.revoke": "text-amber-400",
+  };
+
+  const ROLE_COLORS: Record<string, string> = {
+    admin: "text-red-400",
+    operator: "text-amber-400",
+    viewer: "text-sky-400",
+  };
+
+  if (loading) return <EmptyState label="loading..." />;
+  if (entries.length === 0) return <EmptyState label="no audit events yet" sub="create or delete environments to generate events" />;
+
+  return (
+    <div>
+      <Card>
+        <div className="divide-y divide-neutral-900">
+          {entries.map(e => (
+            <div key={e.id} className="flex items-start gap-4 px-5 py-3.5">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className={`text-xs font-mono ${ACTION_COLORS[e.action] ?? "text-neutral-400"}`}>
+                    {e.action}
+                  </span>
+                  {e.resource_name && (
+                    <span className="text-xs text-neutral-400 font-mono">{e.resource_name}</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+                  <span className={`text-[11px] font-mono ${ROLE_COLORS[e.actor_role] ?? "text-neutral-600"}`}>
+                    {e.actor}
+                  </span>
+                  <span className="text-[11px] text-neutral-700">{e.actor_role}</span>
+                  {e.resource_id && (
+                    <span className="text-[11px] font-mono text-neutral-800 hidden sm:block">{e.resource_id}</span>
+                  )}
+                </div>
+              </div>
+              <span className="text-xs text-neutral-700 font-mono shrink-0">{timeAgo(e.created_at)}</span>
+            </div>
+          ))}
+        </div>
+      </Card>
     </div>
   );
 }
@@ -1448,7 +1551,10 @@ export default function App() {
     { id: "deployments", label: "Deployments" },
     { id: "nodes", label: "Nodes" },
     { id: "create", label: "Create" },
-    ...(userRole === "admin" ? [{ id: "keys" as Tab, label: "Keys" }] : []),
+    ...(userRole === "admin" ? [
+      { id: "keys" as Tab, label: "Keys" },
+      { id: "audit" as Tab, label: "Audit" },
+    ] : []),
   ];
 
   const activeEnvs = environments.filter(e => e.status === "running").length;
@@ -1549,6 +1655,9 @@ export default function App() {
           )}
           {tab === "keys" && userRole === "admin" && (
             <KeysTab />
+          )}
+          {tab === "audit" && userRole === "admin" && (
+            <AuditTab />
           )}
 
         </div>

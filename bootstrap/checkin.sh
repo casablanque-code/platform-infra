@@ -13,7 +13,16 @@ ENVIRONMENT_ID="${ENVIRONMENT_ID:?ENVIRONMENT_ID is required}"
 AGENT_VERSION="${AGENT_VERSION:-0.1.0}"
 
 HOSTNAME=$(hostname -f 2>/dev/null || hostname)
-PUBLIC_IP=$(curl -sf --max-time 5 https://api.ipify.org || echo "unknown")
+
+# Prefer IP injected from tofu outputs (reliable, no network dependency)
+# Fall back to ipify if not provided (e.g. manual checkin)
+if [ -n "${ENV_PUBLIC_IP:-}" ] && [ "$ENV_PUBLIC_IP" != "203.0.113.10" ]; then
+  PUBLIC_IP="$ENV_PUBLIC_IP"
+  log "Using IP from tofu outputs: $PUBLIC_IP"
+else
+  PUBLIC_IP=$(curl -sf --max-time 5 https://api.ipify.org || echo "unknown")
+  log "Using IP from ipify: $PUBLIC_IP"
+fi
 
 log "Registering node with control plane..."
 log "  Environment: $ENVIRONMENT_ID"

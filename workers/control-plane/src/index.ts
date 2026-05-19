@@ -115,24 +115,57 @@ async function hashKey(key: string): Promise<string> {
     .join("");
 }
 
+async function writeAuditLog(
+  db: D1Database,
+  actor: string,
+  actorRole: Role,
+  action: string,
+  resourceType: string,
+  resourceId?: string,
+  resourceName?: string,
+  meta?: Record<string, any>
+): Promise<void> {
+  await db.prepare(`
+    INSERT INTO audit_log (id, actor, actor_role, action, resource_type, resource_id, resource_name, meta, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+    .bind(
+      crypto.randomUUID(),
+      actor,
+      actorRole,
+      action,
+      resourceType,
+      resourceId ?? null,
+      resourceName ?? null,
+      meta ? JSON.stringify(meta) : null,
+      new Date().toISOString()
+    )
+    .run();
+}
+
 async function resolveRole(
   db: D1Database,
   adminKey: string,
   authHeader: string | undefined
-): Promise<Role | null> {
+): Promise<{ role: Role; actor: string } | null> {
   if (!authHeader?.startsWith("Bearer ")) return null;
   const key = authHeader.slice(7);
 
   // Admin bootstrap key — never stored in DB
-  if (key === adminKey) return "admin";
+  if (key === adminKey) return { role: "admin", actor: "admin" };
 
   const hash = await hashKey(key);
   const row = await db
-    .prepare("SELECT id, role FROM api_keys WHERE key_hash = ?")
+    .prepare("SELECT id, name, role, expires_at FROM api_keys WHERE key_hash = ?")
     .bind(hash)
-    .first<{ id: string; role: Role }>();
+    .first<{ id: string; name: string; role: Role; expires_at: string | null }>();
 
   if (!row) return null;
+
+  // Check expiry
+  if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) {
+    return null;
+  }
 
   // Update last_used_at
   await db
@@ -140,7 +173,7 @@ async function resolveRole(
     .bind(new Date().toISOString(), row.id)
     .run();
 
-  return row.role;
+  return { role: row.role, actor: row.name };
 }
 
 // Legacy: used for internal callbacks (GitHub Actions → control plane)
@@ -152,15 +185,16 @@ function isAuthorized(authHeader: string | undefined, token: string) {
 // Middleware factory
 function requireRole(required: Role) {
   return async (c: any, next: () => Promise<void>) => {
-    const role = await resolveRole(
+    const resolved = await resolveRole(
       c.env.DB,
       c.env.ADMIN_KEY,
       c.req.header("Authorization")
     );
-    if (!role || !hasRole(role, required)) {
+    if (!resolved || !hasRole(resolved.role, required)) {
       return c.json({ error: "unauthorized", required }, 401);
     }
-    c.set("role", role);
+    c.set("role", resolved.role);
+    c.set("actor", resolved.actor);
     await next();
   };
 }
@@ -1140,13 +1174,13 @@ app.post("/api/deployments/:id/destroy-complete", async (c) => {
 
 app.get("/api/keys", requireRole("admin"), async (c) => {
   const { results } = await c.env.DB.prepare(
-    `SELECT id, name, role, created_at, last_used_at, created_by FROM api_keys ORDER BY created_at DESC`
+    `SELECT id, name, role, created_at, last_used_at, expires_at, created_by FROM api_keys ORDER BY created_at DESC`
   ).all<Omit<ApiKey, "key_hash">>();
   return c.json(results);
 });
 
 app.post("/api/keys", requireRole("admin"), async (c) => {
-  const body = await c.req.json<{ name: string; role: Role }>();
+  const body = await c.req.json<{ name: string; role: Role; expires_in_days?: number }>();
 
   if (!body.name || !body.role) {
     return c.json({ error: "name and role required" }, 400);
@@ -1154,6 +1188,10 @@ app.post("/api/keys", requireRole("admin"), async (c) => {
   if (!["operator", "viewer"].includes(body.role)) {
     return c.json({ error: "role must be operator or viewer" }, 400);
   }
+
+  const expiresAt = body.expires_in_days
+    ? new Date(Date.now() + body.expires_in_days * 86_400_000).toISOString()
+    : null;
 
   // Generate key: pinfra_<32 random hex chars>
   const raw = Array.from(
@@ -1165,20 +1203,34 @@ app.post("/api/keys", requireRole("admin"), async (c) => {
   const now = new Date().toISOString();
 
   await c.env.DB.prepare(`
-    INSERT INTO api_keys (id, name, key_hash, role, created_at, created_by)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO api_keys (id, name, key_hash, role, created_at, expires_at, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `)
-    .bind(id, body.name, hash, body.role, now, "admin")
+    .bind(id, body.name, hash, body.role, now, expiresAt, c.get("actor") ?? "admin")
     .run();
 
+  await writeAuditLog(
+    c.env.DB, c.get("actor") ?? "admin", "admin",
+    "key.create", "api_key", id, body.name,
+    { role: body.role, expires_at: expiresAt }
+  );
+
   // Return the raw key once — never stored, can't be retrieved again
-  return c.json({ ok: true, id, key, role: body.role });
+  return c.json({ ok: true, id, key, role: body.role, expires_at: expiresAt });
 });
 
 app.delete("/api/keys/:id", requireRole("admin"), async (c) => {
   const { id } = c.req.param();
   await c.env.DB.prepare(`DELETE FROM api_keys WHERE id = ?`).bind(id).run();
   return c.json({ ok: true });
+});
+
+app.get("/api/audit", requireRole("admin"), async (c) => {
+  const limit = Math.min(parseInt(c.req.query("limit") ?? "50"), 200);
+  const { results } = await c.env.DB.prepare(
+    `SELECT * FROM audit_log ORDER BY created_at DESC LIMIT ?`
+  ).bind(limit).all();
+  return c.json(results);
 });
 
 app.notFound(async (c) => {

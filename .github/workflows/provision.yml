@@ -180,6 +180,7 @@ jobs:
               "CONTROL_PLANE_URL=${{ secrets.CONTROL_PLANE_URL }} \
                CALLBACK_TOKEN=${{ secrets.CALLBACK_TOKEN }} \
                ENVIRONMENT_ID=${{ inputs.environment_id }} \
+               ENV_PUBLIC_IP=${{ steps.outputs.outputs.public_ip }} \
                chmod +x /tmp/$(basename $SCRIPT) && /tmp/$(basename $SCRIPT)"
             echo "─── $SCRIPT done ───"
           done
