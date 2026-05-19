@@ -110,11 +110,6 @@ type Tab = "dashboard" | "environments" | "deployments" | "nodes" | "create" | "
 
 // ─── API ──────────────────────────────────────────────────────────────────────
 
-async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, options);
-  return res.json();
-}
-
 // Module-level key store for components
 let _currentKey = "";
 function setCurrentKey(k: string) { _currentKey = k; }
