@@ -4,6 +4,19 @@ import { createPortal } from "react-dom";
 const API = window.location.origin;
 const LIME = "#CBFF4D";
 
+function authedFetch<T>(path: string, key: string, options?: RequestInit): Promise<T> {
+  return fetch(`${API}${path}`, {
+    ...options,
+    headers: {
+      ...(options?.headers ?? {}),
+      "Authorization": `Bearer ${key}`,
+    },
+  }).then(async r => {
+    if (r.status === 401) throw new Error("unauthorized");
+    return r.json() as Promise<T>;
+  });
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Environment = {
@@ -59,6 +72,15 @@ type Action = {
   finished_at: string | null;
 };
 
+type ApiKey = {
+  id: string;
+  name: string;
+  role: "admin" | "operator" | "viewer";
+  created_at: string;
+  last_used_at: string | null;
+  created_by: string;
+};
+
 type EnvironmentOutput = {
   output_key: string;
   output_value: string;
@@ -84,13 +106,20 @@ type PlatformTemplate = {
   inputs?: TemplateInput[];
 };
 
-type Tab = "dashboard" | "environments" | "deployments" | "nodes" | "create";
+type Tab = "dashboard" | "environments" | "deployments" | "nodes" | "create" | "keys";
 
 // ─── API ──────────────────────────────────────────────────────────────────────
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${path}`, options);
   return res.json();
+}
+
+// Module-level key store for components
+let _currentKey = "";
+function setCurrentKey(k: string) { _currentKey = k; }
+function authFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  return authedFetch<T>(path, _currentKey, options);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -425,12 +454,12 @@ function EnvironmentsTab({
 
   async function loadOutputs(envId: string) {
     if (outputs[envId] !== undefined) return;
-    const data = await apiFetch<EnvironmentOutput[]>(`/api/environments/${envId}/outputs`);
+    const data = await authFetch<EnvironmentOutput[]>(`/api/environments/${envId}/outputs`);
     setOutputs(prev => ({ ...prev, [envId]: data }));
   }
 
   async function loadActions(envId: string) {
-    const data = await apiFetch<Action[]>(`/api/environments/${envId}/actions`);
+    const data = await authFetch<Action[]>(`/api/environments/${envId}/actions`);
     setActions(prev => ({ ...prev, [envId]: data }));
   }
 
@@ -445,7 +474,7 @@ function EnvironmentsTab({
 
   async function runAction(envId: string, type: string, params?: Record<string, any>) {
     setRunningAction(prev => ({ ...prev, [envId]: true }));
-    await apiFetch(`/api/environments/${envId}/actions`, {
+    await authFetch(`/api/environments/${envId}/actions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type, params }),
@@ -455,13 +484,13 @@ function EnvironmentsTab({
   }
 
   async function doDestroy(id: string) {
-    await apiFetch(`/api/environments/${id}/destroy`, { method: "POST" });
+    await authFetch(`/api/environments/${id}/destroy`, { method: "POST" });
     setConfirming(null);
     onRefresh();
   }
 
   async function doDelete(id: string) {
-    await apiFetch(`/api/environments/${id}`, { method: "DELETE" });
+    await authFetch(`/api/environments/${id}`, { method: "DELETE" });
     setConfirming(null);
     onRefresh();
   }
@@ -767,7 +796,7 @@ function DeploymentsTab({ deployments, onRefresh }: { deployments: Deployment[];
 
   async function fetchEvents(id: string, showLoading = false) {
     if (showLoading) setLoading(true);
-    const data = await apiFetch<DeploymentEvent[]>(`/api/deployments/${id}/events`);
+    const data = await authFetch<DeploymentEvent[]>(`/api/deployments/${id}/events`);
     setEvents(data);
     if (showLoading) setLoading(false);
   }
@@ -791,7 +820,7 @@ function DeploymentsTab({ deployments, onRefresh }: { deployments: Deployment[];
   }, [selected, deployments]);
 
   async function doDelete(id: string) {
-    await apiFetch(`/api/deployments/${id}`, { method: "DELETE" });
+    await authFetch(`/api/deployments/${id}`, { method: "DELETE" });
     setConfirming(null);
     if (selected === id) setSelected(null);
     onRefresh();
@@ -895,7 +924,7 @@ function NodesTab({ nodes, onRefresh }: { nodes: InfraNode[]; onRefresh: () => v
   const [confirming, setConfirming] = useState<string | null>(null);
 
   async function doDelete(id: string) {
-    await apiFetch(`/api/nodes/${id}`, { method: "DELETE" });
+    await authFetch(`/api/nodes/${id}`, { method: "DELETE" });
     setConfirming(null);
     onRefresh();
   }
@@ -1001,7 +1030,7 @@ function CreateTab({ templates, onSuccess }: { templates: PlatformTemplate[]; on
     setLoading(true);
     setError(null);
     try {
-      const res = await apiFetch<any>("/api/environments", {
+      const res = await authFetch<any>("/api/environments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1163,6 +1192,210 @@ function CreateTab({ templates, onSuccess }: { templates: PlatformTemplate[]; on
   );
 }
 
+// ─── Login ───────────────────────────────────────────────────────────────────
+
+function LoginScreen({ onLogin }: { onLogin: (key: string) => void }) {
+  const [key, setKey] = useState("");
+  const [error, setError] = useState(false);
+
+  async function attempt() {
+    if (!key.trim()) return;
+    try {
+      await authedFetch("/api/templates", key.trim());
+      localStorage.setItem("pinfra_key", key.trim());
+      onLogin(key.trim());
+    } catch {
+      setError(true);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-[#080808] flex items-center justify-center">
+      <div className="w-full max-w-sm px-4">
+        <div className="mb-8 text-center">
+          <h1 className="text-2xl font-light">
+            <span className="text-neutral-100">platform</span>
+            <span style={{ color: LIME }}>-infra</span>
+          </h1>
+          <p className="text-xs text-neutral-600 font-mono mt-2">enter your api key</p>
+        </div>
+        <div className="border border-neutral-800 rounded-2xl p-6 bg-neutral-950 space-y-4">
+          <input
+            type="password"
+            value={key}
+            onChange={e => { setKey(e.target.value); setError(false); }}
+            onKeyDown={e => e.key === "Enter" && attempt()}
+            placeholder="pinfra_..."
+            className={`w-full bg-neutral-900 border rounded-xl px-4 py-3 text-sm font-mono placeholder:text-neutral-700 focus:outline-none transition-colors ${
+              error ? "border-red-900/60" : "border-neutral-800 focus:border-neutral-600"
+            }`}
+          />
+          {error && <p className="text-xs text-red-500 font-mono">invalid key</p>}
+          <button
+            onClick={attempt}
+            disabled={!key.trim()}
+            style={{ backgroundColor: key.trim() ? LIME : undefined }}
+            className="w-full rounded-xl py-3 text-sm font-semibold text-black transition-all disabled:opacity-30 disabled:bg-neutral-800 disabled:text-neutral-500 disabled:cursor-not-allowed"
+          >
+            sign in
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Keys Tab ─────────────────────────────────────────────────────────────────
+
+function KeysTab() {
+  const [keys, setKeys] = useState<ApiKey[]>([]);
+  const [name, setName] = useState("");
+  const [role, setRole] = useState<"operator" | "viewer">("operator");
+  const [creating, setCreating] = useState(false);
+  const [newKey, setNewKey] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  async function loadKeys() {
+    const data = await authFetch<ApiKey[]>("/api/keys");
+    setKeys(data);
+  }
+
+  useEffect(() => { loadKeys(); }, []);
+
+  async function createKey() {
+    if (!name.trim()) return;
+    setCreating(true);
+    const res = await authFetch<{ ok: boolean; key: string }>("/api/keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim(), role }),
+    });
+    setNewKey(res.key);
+    setName("");
+    setCreating(false);
+    loadKeys();
+  }
+
+  async function deleteKey(id: string) {
+    await authFetch(`/api/keys/${id}`, { method: "DELETE" });
+    setConfirming(null);
+    loadKeys();
+  }
+
+  function copyKey(k: string) {
+    navigator.clipboard.writeText(k);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  const ROLE_COLORS: Record<string, string> = {
+    admin: "text-red-400 bg-red-400/10 border-red-400/25",
+    operator: "text-amber-400 bg-amber-400/10 border-amber-400/25",
+    viewer: "text-sky-400 bg-sky-400/10 border-sky-400/25",
+  };
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <SectionLabel>API Keys</SectionLabel>
+
+      {/* New key revealed */}
+      {newKey && (
+        <div className="border border-emerald-900/50 rounded-2xl p-5 bg-emerald-950/20 space-y-3">
+          <p className="text-xs text-emerald-400 font-mono uppercase tracking-wider">Key created — copy it now, it won't be shown again</p>
+          <div className="flex items-center gap-3">
+            <code className="flex-1 text-xs font-mono text-neutral-200 bg-neutral-900 border border-neutral-800 rounded-lg px-4 py-3 break-all">{newKey}</code>
+            <button
+              onClick={() => copyKey(newKey)}
+              className="shrink-0 text-xs px-3 py-3 rounded-lg border border-neutral-700 text-neutral-400 hover:border-neutral-500 transition-colors"
+            >
+              {copied ? "✓" : "copy"}
+            </button>
+          </div>
+          <button onClick={() => setNewKey(null)} className="text-xs text-neutral-700 hover:text-neutral-500 font-mono transition-colors">dismiss</button>
+        </div>
+      )}
+
+      {/* Create form */}
+      <Card className="p-5 space-y-4">
+        <p className="text-[11px] uppercase tracking-[0.2em] text-neutral-600 font-mono">Create new key</p>
+        <div className="flex gap-3 flex-wrap">
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="e.g. alice-dev"
+            className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-2.5 text-sm placeholder:text-neutral-700 focus:outline-none focus:border-neutral-600 transition-colors min-w-[160px]"
+          />
+          <div className="flex gap-1.5">
+            {(["operator", "viewer"] as const).map(r => (
+              <button
+                key={r}
+                onClick={() => setRole(r)}
+                className={`px-3 py-2 rounded-lg text-xs font-mono transition-colors border ${
+                  role === r ? "bg-white text-black border-white" : "border-neutral-800 text-neutral-500 hover:border-neutral-600"
+                }`}
+              >
+                {r}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={createKey}
+            disabled={!name.trim() || creating}
+            style={{ backgroundColor: name.trim() && !creating ? LIME : undefined }}
+            className="px-4 py-2 rounded-xl text-sm font-semibold text-black transition-all disabled:opacity-30 disabled:bg-neutral-800 disabled:text-neutral-500 disabled:cursor-not-allowed"
+          >
+            {creating ? "..." : "create"}
+          </button>
+        </div>
+        <div className="text-xs text-neutral-700 font-mono space-y-0.5">
+          <p><span className="text-amber-400">operator</span> — create environments, destroy, run actions</p>
+          <p><span className="text-sky-400">viewer</span> — read-only access to all resources</p>
+        </div>
+      </Card>
+
+      {/* Keys list */}
+      {keys.length === 0 ? (
+        <EmptyState label="no api keys yet" sub="admin key is set via wrangler secret" />
+      ) : (
+        <div className="space-y-2">
+          {keys.map(k => (
+            <Card key={k.id} className="px-5 py-4">
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-3">
+                    <p className="font-medium text-neutral-200">{k.name}</p>
+                    <span className={`text-[11px] font-mono uppercase tracking-wider px-2.5 py-0.5 rounded-full border ${ROLE_COLORS[k.role]}`}>
+                      {k.role}
+                    </span>
+                  </div>
+                  <p className="text-xs text-neutral-700 font-mono mt-1">
+                    created {timeAgo(k.created_at)}
+                    {k.last_used_at ? ` · last used ${timeAgo(k.last_used_at)}` : " · never used"}
+                  </p>
+                </div>
+                {confirming === k.id ? (
+                  <DeleteConfirm
+                    onConfirm={() => deleteKey(k.id)}
+                    onCancel={() => setConfirming(null)}
+                  />
+                ) : (
+                  <button
+                    onClick={() => setConfirming(k.id)}
+                    className="text-xs px-3 py-1.5 rounded-lg border border-red-900/50 text-red-500 hover:bg-red-950/40 transition-colors shrink-0"
+                  >
+                    revoke
+                  </button>
+                )}
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -1171,19 +1404,42 @@ export default function App() {
   const [environments, setEnvironments] = useState<Environment[]>([]);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [nodes, setNodes] = useState<InfraNode[]>([]);
+  const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem("pinfra_key") ?? "");
+  const [userRole, setUserRole] = useState<"admin" | "operator" | "viewer" | null>(null);
+  const [authError, setAuthError] = useState(false);
 
   const loadAll = useCallback(async () => {
-    const [tmpl, envs, deps, nds] = await Promise.all([
-      apiFetch<PlatformTemplate[]>("/api/templates"),
-      apiFetch<Environment[]>("/api/environments"),
-      apiFetch<Deployment[]>("/api/deployments"),
-      apiFetch<InfraNode[]>("/api/nodes"),
-    ]);
-    setTemplates(tmpl);
-    setEnvironments(envs);
-    setDeployments(deps);
-    setNodes(nds);
-  }, []);
+    if (!apiKey) return;
+    try {
+      setCurrentKey(apiKey);
+      const [tmpl, envs, deps, nds] = await Promise.all([
+        authedFetch<PlatformTemplate[]>("/api/templates", apiKey),
+        authedFetch<Environment[]>("/api/environments", apiKey),
+        authedFetch<Deployment[]>("/api/deployments", apiKey),
+        authedFetch<InfraNode[]>("/api/nodes", apiKey),
+      ]);
+      setTemplates(tmpl);
+      setEnvironments(envs);
+      setDeployments(deps);
+      setNodes(nds);
+      setAuthError(false);
+    } catch {
+      setAuthError(true);
+    }
+  }, [apiKey]);
+
+  // Detect role on mount / key change
+  useEffect(() => {
+    if (!apiKey) { setUserRole(null); return; }
+    authedFetch<ApiKey[]>("/api/keys", apiKey)
+      .then(() => setUserRole("admin"))
+      .catch(() => {
+        // Not admin — check if we can load templates (viewer+)
+        authedFetch<PlatformTemplate[]>("/api/templates", apiKey)
+          .then(() => setUserRole("viewer"))
+          .catch(() => setUserRole(null));
+      });
+  }, [apiKey]);
 
   useEffect(() => {
     loadAll();
@@ -1197,12 +1453,21 @@ export default function App() {
     { id: "deployments", label: "Deployments" },
     { id: "nodes", label: "Nodes" },
     { id: "create", label: "Create" },
+    ...(userRole === "admin" ? [{ id: "keys" as Tab, label: "Keys" }] : []),
   ];
 
   const activeEnvs = environments.filter(e => e.status === "running").length;
   const activeJobs = deployments.filter(d => d.status === "dispatching").length;
   const downNodes = nodes.filter(n => n.status === "unreachable").length;
   const onlineNodes = nodes.filter(n => n.status === "online").length;
+
+  // Sync module-level key
+  useEffect(() => { setCurrentKey(apiKey); }, [apiKey]);
+
+  // Show login if no key
+  if (!apiKey || authError) {
+    return <LoginScreen onLogin={k => { setApiKey(k); setAuthError(false); }} />;
+  }
 
   return (
     <>
@@ -1219,12 +1484,25 @@ export default function App() {
         <div className="max-w-6xl mx-auto px-4 py-8">
 
           {/* Header */}
-          <div className="mb-8">
-            <p className="text-[11px] uppercase tracking-[0.3em] text-neutral-700 font-mono">infrastructure control plane</p>
-            <h1 className="text-3xl font-light tracking-tight mt-1.5">
-              <span className="text-neutral-100">platform</span>
-              <span style={{ color: LIME }}>-infra</span>
-            </h1>
+          <div className="mb-8 flex items-start justify-between">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.3em] text-neutral-700 font-mono">infrastructure control plane</p>
+              <h1 className="text-3xl font-light tracking-tight mt-1.5">
+                <span className="text-neutral-100">platform</span>
+                <span style={{ color: LIME }}>-infra</span>
+              </h1>
+            </div>
+            <div className="flex items-center gap-3 mt-2">
+              {userRole && (
+                <span className="text-[11px] font-mono text-neutral-600 border border-neutral-800 rounded px-2 py-1">{userRole}</span>
+              )}
+              <button
+                onClick={() => { localStorage.removeItem("pinfra_key"); setApiKey(""); setUserRole(null); }}
+                className="text-[11px] font-mono text-neutral-600 hover:text-neutral-400 transition-colors"
+              >
+                sign out
+              </button>
+            </div>
           </div>
 
           {/* Tabs */}
@@ -1268,8 +1546,14 @@ export default function App() {
           {tab === "nodes" && (
             <NodesTab nodes={nodes} onRefresh={loadAll} />
           )}
-          {tab === "create" && (
+          {tab === "create" && userRole !== "viewer" && (
             <CreateTab templates={templates} onSuccess={() => { loadAll(); setTab("environments"); }} />
+          )}
+          {tab === "create" && userRole === "viewer" && (
+            <EmptyState label="read-only access" sub="you need operator role to create environments" />
+          )}
+          {tab === "keys" && userRole === "admin" && (
+            <KeysTab />
           )}
 
         </div>

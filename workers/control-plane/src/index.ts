@@ -15,6 +15,7 @@ type Env = {
   GITHUB_DESTROY_WORKFLOW: string;
   GITHUB_ACTION_WORKFLOW: string;
   GITHUB_REF: string;
+  ADMIN_KEY: string;
 };
 
 type TemplateInput = {
@@ -90,9 +91,78 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.use("*", cors());
 
+// ── RBAC ──────────────────────────────────────────────────────────────────────
+
+type Role = "admin" | "operator" | "viewer";
+
+const ROLE_HIERARCHY: Record<Role, number> = {
+  admin: 3,
+  operator: 2,
+  viewer: 1,
+};
+
+function hasRole(actual: Role, required: Role): boolean {
+  return ROLE_HIERARCHY[actual] >= ROLE_HIERARCHY[required];
+}
+
+async function hashKey(key: string): Promise<string> {
+  const buf = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(key)
+  );
+  return Array.from(new Uint8Array(buf))
+    .map(b => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function resolveRole(
+  db: D1Database,
+  adminKey: string,
+  authHeader: string | undefined
+): Promise<Role | null> {
+  if (!authHeader?.startsWith("Bearer ")) return null;
+  const key = authHeader.slice(7);
+
+  // Admin bootstrap key — never stored in DB
+  if (key === adminKey) return "admin";
+
+  const hash = await hashKey(key);
+  const row = await db
+    .prepare("SELECT id, role FROM api_keys WHERE key_hash = ?")
+    .bind(hash)
+    .first<{ id: string; role: Role }>();
+
+  if (!row) return null;
+
+  // Update last_used_at
+  await db
+    .prepare("UPDATE api_keys SET last_used_at = ? WHERE id = ?")
+    .bind(new Date().toISOString(), row.id)
+    .run();
+
+  return row.role;
+}
+
+// Legacy: used for internal callbacks (GitHub Actions → control plane)
 function isAuthorized(authHeader: string | undefined, token: string) {
   if (!authHeader) return false;
   return authHeader === `Bearer ${token}`;
+}
+
+// Middleware factory
+function requireRole(required: Role) {
+  return async (c: any, next: () => Promise<void>) => {
+    const role = await resolveRole(
+      c.env.DB,
+      c.env.ADMIN_KEY,
+      c.req.header("Authorization")
+    );
+    if (!role || !hasRole(role, required)) {
+      return c.json({ error: "unauthorized", required }, 401);
+    }
+    c.set("role", role);
+    await next();
+  };
 }
 
 function findTemplate(id: string) {
@@ -135,11 +205,11 @@ app.get("/api/health", (c) => {
   });
 });
 
-app.get("/api/templates", (c) => {
+app.get("/api/templates", requireRole("viewer"), (c) => {
   return c.json(templates);
 });
 
-app.get("/api/environments", async (c) => {
+app.get("/api/environments", requireRole("viewer"), async (c) => {
   const result = await c.env.DB.prepare(`
     SELECT * FROM environments
     ORDER BY created_at DESC
@@ -148,7 +218,7 @@ app.get("/api/environments", async (c) => {
   return c.json(result.results);
 });
 
-app.get("/api/deployments", async (c) => {
+app.get("/api/deployments", requireRole("viewer"), async (c) => {
   const result = await c.env.DB.prepare(`
     SELECT * FROM deployments
     ORDER BY created_at DESC
@@ -190,7 +260,7 @@ app.get("/api/environments/:id/outputs", async (c) => {
   return c.json(result.results);
 });
 
-app.delete("/api/environments/:id", async (c) => {
+app.delete("/api/environments/:id", requireRole("operator"), async (c) => {
   const id = c.req.param("id");
 
   // Only allow delete if environment is destroyed or permanently failed
@@ -254,7 +324,7 @@ app.delete("/api/environments/:id", async (c) => {
   });
 });
 
-app.post("/api/environments/:id/destroy", async (c) => {
+app.post("/api/environments/:id/destroy", requireRole("operator"), async (c) => {
   const id = c.req.param("id");
 
   const environment = await c.env.DB.prepare(`
@@ -321,7 +391,7 @@ app.post("/api/environments/:id/destroy", async (c) => {
   });
 });
 
-app.post("/api/environments", async (c) => {
+app.post("/api/environments", requireRole("operator"), async (c) => {
   const body = await c.req.json<{
     name: string;
     provider: string;
@@ -829,7 +899,7 @@ async function syncGithubRuns(env: Env) {
   }
 }
 
-app.delete("/api/deployments/:id", async (c) => {
+app.delete("/api/deployments/:id", requireRole("operator"), async (c) => {
   const { id } = c.req.param();
   await c.env.DB.prepare(`DELETE FROM deployment_events WHERE deployment_id = ?`).bind(id).run();
   await c.env.DB.prepare(`DELETE FROM deployments WHERE id = ?`).bind(id).run();
@@ -1066,6 +1136,51 @@ app.post("/api/deployments/:id/destroy-complete", async (c) => {
   });
 });
 
+// ── API Keys management ───────────────────────────────────────────────────────
+
+app.get("/api/keys", requireRole("admin"), async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, name, role, created_at, last_used_at, created_by FROM api_keys ORDER BY created_at DESC`
+  ).all<Omit<ApiKey, "key_hash">>();
+  return c.json(results);
+});
+
+app.post("/api/keys", requireRole("admin"), async (c) => {
+  const body = await c.req.json<{ name: string; role: Role }>();
+
+  if (!body.name || !body.role) {
+    return c.json({ error: "name and role required" }, 400);
+  }
+  if (!["operator", "viewer"].includes(body.role)) {
+    return c.json({ error: "role must be operator or viewer" }, 400);
+  }
+
+  // Generate key: pinfra_<32 random hex chars>
+  const raw = Array.from(
+    crypto.getRandomValues(new Uint8Array(16))
+  ).map(b => b.toString(16).padStart(2, "0")).join("");
+  const key = `pinfra_${raw}`;
+  const hash = await hashKey(key);
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  await c.env.DB.prepare(`
+    INSERT INTO api_keys (id, name, key_hash, role, created_at, created_by)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
+    .bind(id, body.name, hash, body.role, now, "admin")
+    .run();
+
+  // Return the raw key once — never stored, can't be retrieved again
+  return c.json({ ok: true, id, key, role: body.role });
+});
+
+app.delete("/api/keys/:id", requireRole("admin"), async (c) => {
+  const { id } = c.req.param();
+  await c.env.DB.prepare(`DELETE FROM api_keys WHERE id = ?`).bind(id).run();
+  return c.json({ ok: true });
+});
+
 app.notFound(async (c) => {
   return c.env.ASSETS.fetch(c.req.raw);
 });
@@ -1165,7 +1280,7 @@ app.post("/api/nodes/checkin", async (c) => {
   return c.json({ ok: true, node_id: nodeId, action: "created" });
 });
 
-app.get("/api/nodes", async (c) => {
+app.get("/api/nodes", requireRole("viewer"), async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT * FROM nodes ORDER BY last_seen_at DESC`
   ).all<Node>();
@@ -1187,7 +1302,7 @@ app.get("/api/nodes/:id", async (c) => {
   return c.json(node);
 });
 
-app.delete("/api/nodes/:id", async (c) => {
+app.delete("/api/nodes/:id", requireRole("operator"), async (c) => {
   const { id } = c.req.param();
   await c.env.DB.prepare(`DELETE FROM nodes WHERE id = ?`).bind(id).run();
   return c.json({ ok: true });
@@ -1195,7 +1310,7 @@ app.delete("/api/nodes/:id", async (c) => {
 
 // ── Runtime actions ───────────────────────────────────────────────────────────
 
-app.post("/api/environments/:id/actions", async (c) => {
+app.post("/api/environments/:id/actions", requireRole("operator"), async (c) => {
   const { id } = c.req.param();
 
   const body = await c.req.json<{
