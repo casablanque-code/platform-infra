@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, createContext, useContext } from "react";
+import { useEffect, useState, useCallback, useRef, createContext } from "react";
 import { createPortal } from "react-dom";
 
 const API = window.location.origin;
