@@ -175,7 +175,8 @@ jobs:
       - name: Run bootstrap scripts
         if: steps.outputs.outputs.is_mock == 'false' && steps.runtime.outputs.has_bootstrap == 'true'
         env:
-          SSH_OPTS: "-o StrictHostKeyChecking=no -i ~/.ssh/bootstrap_key -p ${{ steps.outputs.outputs.ssh_port }}"
+          SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/bootstrap_key -p ${{ steps.outputs.outputs.ssh_port }}"
+          SCP_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/bootstrap_key -P ${{ steps.outputs.outputs.ssh_port }}"
           TARGET: "${{ steps.outputs.outputs.ssh_user }}@${{ steps.outputs.outputs.public_ip }}"
         run: |
           RUNTIME_FILE="templates/${{ inputs.template }}/runtime.json"
@@ -183,7 +184,7 @@ jobs:
 
           for SCRIPT in $SCRIPTS; do
             echo "─── Running $SCRIPT ───"
-            scp $SSH_OPTS "$SCRIPT" "$TARGET:/tmp/$(basename $SCRIPT)"
+            scp $SCP_OPTS "$SCRIPT" "$TARGET:/tmp/$(basename $SCRIPT)"
             ssh $SSH_OPTS "$TARGET" \
               "CONTROL_PLANE_URL=${{ secrets.CONTROL_PLANE_URL }} \
                CALLBACK_TOKEN=${{ secrets.CALLBACK_TOKEN }} \
