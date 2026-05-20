@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, createContext, useContext } from "react";
 import { createPortal } from "react-dom";
 
 const API = window.location.origin;
@@ -124,8 +124,7 @@ type Tab = "dashboard" | "environments" | "deployments" | "nodes" | "create" | "
 // ─── API ──────────────────────────────────────────────────────────────────────
 
 // Auth context
-const AuthContext = React.createContext<string>("");
-function useAuthKey() { return React.useContext(AuthContext); }
+const AuthContext = createContext<string>("");
 function authFetch<T>(path: string, options?: RequestInit): Promise<T> {
   // Fallback: read from localStorage directly for module-level calls
   const key = localStorage.getItem("pinfra_key") ?? "";
