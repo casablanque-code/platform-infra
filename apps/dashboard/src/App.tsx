@@ -123,11 +123,13 @@ type Tab = "dashboard" | "environments" | "deployments" | "nodes" | "create" | "
 
 // ─── API ──────────────────────────────────────────────────────────────────────
 
-// Module-level key store for components
-let _currentKey = "";
-function setCurrentKey(k: string) { _currentKey = k; }
+// Auth context
+const AuthContext = React.createContext<string>("");
+function useAuthKey() { return React.useContext(AuthContext); }
 function authFetch<T>(path: string, options?: RequestInit): Promise<T> {
-  return authedFetch<T>(path, _currentKey, options);
+  // Fallback: read from localStorage directly for module-level calls
+  const key = localStorage.getItem("pinfra_key") ?? "";
+  return authedFetch<T>(path, key, options);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1509,7 +1511,6 @@ export default function App() {
   const loadAll = useCallback(async () => {
     if (!apiKey) return;
     try {
-      setCurrentKey(apiKey);
       const [tmpl, envs, deps, nds] = await Promise.all([
         authedFetch<PlatformTemplate[]>("/api/templates", apiKey),
         authedFetch<Environment[]>("/api/environments", apiKey),
@@ -1557,15 +1558,13 @@ export default function App() {
   const downNodes = nodes.filter(n => n.status === "unreachable").length;
   const onlineNodes = nodes.filter(n => n.status === "online").length;
 
-  // Sync module-level key
-  useEffect(() => { setCurrentKey(apiKey); }, [apiKey]);
-
   // Show login if no key
   if (!apiKey || authError) {
     return <LoginScreen onLogin={k => { setApiKey(k); setAuthError(false); }} />;
   }
 
   return (
+    <AuthContext.Provider value={apiKey}>
     <>
       {/* Custom scrollbar styles */}
       <style>{`
@@ -1658,5 +1657,6 @@ export default function App() {
         </div>
       </div>
     </>
+    </AuthContext.Provider>
   );
 }

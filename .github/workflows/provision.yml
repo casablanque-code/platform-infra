@@ -110,7 +110,13 @@ jobs:
 
           PUBLIC_IP=$(jq -r '.public_ip.value // empty' outputs.json)
           SSH_PORT=$(jq -r '.ssh_port.value // "22"' outputs.json)
-          IS_MOCK=$(echo "$PUBLIC_IP" | grep -q "^203\.0\.113\." && echo "true" || echo "false")
+
+          # Mock if: no public_ip output, or it's the RFC 5737 test address
+          if [ -z "$PUBLIC_IP" ] || echo "$PUBLIC_IP" | grep -q "^203\.0\.113\."; then
+            IS_MOCK="true"
+          else
+            IS_MOCK="false"
+          fi
 
           echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
           echo "ssh_port=$SSH_PORT" >> $GITHUB_OUTPUT
