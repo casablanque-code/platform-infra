@@ -1521,8 +1521,9 @@ export default function App() {
       setDeployments(deps);
       setNodes(nds);
       setAuthError(false);
-    } catch {
-      setAuthError(true);
+    } catch (e: any) {
+      // Only show login screen on auth failure, don't wipe existing data
+      if (e?.message === "unauthorized") setAuthError(true);
     }
   }, [apiKey]);
 

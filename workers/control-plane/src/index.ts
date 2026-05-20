@@ -193,10 +193,21 @@ function requireRole(required: Role) {
     if (!resolved || !hasRole(resolved.role, required)) {
       return c.json({ error: "unauthorized", required }, 401);
     }
+    // Store in both set() and request header clone for reliable access
     c.set("role", resolved.role);
     c.set("actor", resolved.actor);
+    c._resolvedRole = resolved.role;
+    c._resolvedActor = resolved.actor;
     await next();
   };
+}
+
+function getActor(c: any): string {
+  return c._resolvedActor ?? getActor(c);
+}
+
+function getRole(c: any): Role {
+  return c._resolvedRole ?? getRole(c);
 }
 
 function findTemplate(id: string) {
@@ -419,7 +430,7 @@ app.post("/api/environments/:id/destroy", requireRole("operator"), async (c) => 
   );
 
   await writeAuditLog(
-    c.env.DB, c.get("actor") ?? "unknown", c.get("role") ?? "operator",
+    c.env.DB, getActor(c), getRole(c),
     "environment.destroy", "environment", id, environment.name
   );
 
@@ -1178,7 +1189,7 @@ app.post("/api/deployments/:id/destroy-complete", async (c) => {
 // ── API Keys management ───────────────────────────────────────────────────────
 
 app.get("/api/whoami", requireRole("viewer"), async (c) => {
-  return c.json({ role: c.get("role"), actor: c.get("actor") });
+  return c.json({ role: getRole(c), actor: getActor(c) });
 });
 
 app.get("/api/keys", requireRole("admin"), async (c) => {
@@ -1215,11 +1226,11 @@ app.post("/api/keys", requireRole("admin"), async (c) => {
     INSERT INTO api_keys (id, name, key_hash, role, created_at, expires_at, created_by)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `)
-    .bind(id, body.name, hash, body.role, now, expiresAt, c.get("actor") ?? "admin")
+    .bind(id, body.name, hash, body.role, now, expiresAt, getActor(c))
     .run();
 
   await writeAuditLog(
-    c.env.DB, c.get("actor") ?? "admin", "admin",
+    c.env.DB, getActor(c), "admin",
     "key.create", "api_key", id, body.name,
     { role: body.role, expires_at: expiresAt }
   );
@@ -1234,7 +1245,7 @@ app.delete("/api/keys/:id", requireRole("admin"), async (c) => {
     .bind(id).first<{ name: string }>();
   await c.env.DB.prepare(`DELETE FROM api_keys WHERE id = ?`).bind(id).run();
   await writeAuditLog(
-    c.env.DB, c.get("actor") ?? "admin", "admin",
+    c.env.DB, getActor(c), "admin",
     "key.revoke", "api_key", id, key?.name
   );
   return c.json({ ok: true });
@@ -1460,7 +1471,7 @@ app.post("/api/environments/:id/actions", requireRole("operator"), async (c) => 
   await c.env.DB.prepare(`UPDATE actions SET status = 'dispatched' WHERE id = ?`).bind(actionId).run();
 
   await writeAuditLog(
-    c.env.DB, c.get("actor") ?? "unknown", c.get("role") ?? "operator",
+    c.env.DB, getActor(c), getRole(c),
     `action.${body.type}`, "environment", id, environment.name,
     { action_id: actionId, params: body.params }
   );
