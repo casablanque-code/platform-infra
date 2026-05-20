@@ -418,6 +418,11 @@ app.post("/api/environments/:id/destroy", requireRole("operator"), async (c) => 
     "Destroy requested"
   );
 
+  await writeAuditLog(
+    c.env.DB, c.get("actor") ?? "unknown", c.get("role") ?? "operator",
+    "environment.destroy", "environment", id, environment.name
+  );
+
   return c.json({
     ok: true,
     deployment_id: deploymentId,
@@ -1172,6 +1177,10 @@ app.post("/api/deployments/:id/destroy-complete", async (c) => {
 
 // ── API Keys management ───────────────────────────────────────────────────────
 
+app.get("/api/whoami", requireRole("viewer"), async (c) => {
+  return c.json({ role: c.get("role"), actor: c.get("actor") });
+});
+
 app.get("/api/keys", requireRole("admin"), async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT id, name, role, created_at, last_used_at, expires_at, created_by FROM api_keys ORDER BY created_at DESC`
@@ -1221,7 +1230,13 @@ app.post("/api/keys", requireRole("admin"), async (c) => {
 
 app.delete("/api/keys/:id", requireRole("admin"), async (c) => {
   const { id } = c.req.param();
+  const key = await c.env.DB.prepare(`SELECT name FROM api_keys WHERE id = ?`)
+    .bind(id).first<{ name: string }>();
   await c.env.DB.prepare(`DELETE FROM api_keys WHERE id = ?`).bind(id).run();
+  await writeAuditLog(
+    c.env.DB, c.get("actor") ?? "admin", "admin",
+    "key.revoke", "api_key", id, key?.name
+  );
   return c.json({ ok: true });
 });
 
@@ -1443,6 +1458,12 @@ app.post("/api/environments/:id/actions", requireRole("operator"), async (c) => 
   }
 
   await c.env.DB.prepare(`UPDATE actions SET status = 'dispatched' WHERE id = ?`).bind(actionId).run();
+
+  await writeAuditLog(
+    c.env.DB, c.get("actor") ?? "unknown", c.get("role") ?? "operator",
+    `action.${body.type}`, "environment", id, environment.name,
+    { action_id: actionId, params: body.params }
+  );
 
   return c.json({ ok: true, action_id: actionId });
 });

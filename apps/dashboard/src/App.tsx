@@ -1526,17 +1526,12 @@ export default function App() {
     }
   }, [apiKey]);
 
-  // Detect role on mount / key change
+  // Detect role on mount / key change via whoami
   useEffect(() => {
     if (!apiKey) { setUserRole(null); return; }
-    authedFetch<ApiKey[]>("/api/keys", apiKey)
-      .then(() => setUserRole("admin"))
-      .catch(() => {
-        // Not admin — check if we can load templates (viewer+)
-        authedFetch<PlatformTemplate[]>("/api/templates", apiKey)
-          .then(() => setUserRole("viewer"))
-          .catch(() => setUserRole(null));
-      });
+    authedFetch<{ role: "admin" | "operator" | "viewer"; actor: string }>("/api/whoami", apiKey)
+      .then(data => setUserRole(data.role))
+      .catch(() => setUserRole(null));
   }, [apiKey]);
 
   useEffect(() => {
@@ -1647,7 +1642,7 @@ export default function App() {
           {tab === "nodes" && (
             <NodesTab nodes={nodes} onRefresh={loadAll} />
           )}
-          {tab === "create" && userRole !== "viewer" && (
+          {tab === "create" && (userRole === "admin" || userRole === "operator") && (
             <CreateTab templates={templates} onSuccess={() => { loadAll(); setTab("environments"); }} />
           )}
           {tab === "create" && userRole === "viewer" && (
