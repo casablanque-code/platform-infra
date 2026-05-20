@@ -88,8 +88,8 @@ jobs:
       - name: Reboot
         if: steps.mock.outputs.is_mock == 'false' && inputs.action_type == 'reboot'
         env:
-          SSH_OPTS: "-o StrictHostKeyChecking=no -i ~/.ssh/action_key -p ${{ inputs.ssh_port }}"
-          TARGET: "deploy@${{ inputs.public_ip }}"
+          SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/action_key -p ${{ inputs.ssh_port }}"
+          TARGET: "root@${{ inputs.public_ip }}"
         run: |
           curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/event" \
             -H "Content-Type: application/json" \
@@ -101,9 +101,11 @@ jobs:
       - name: Run script
         if: steps.mock.outputs.is_mock == 'false' && inputs.action_type == 'run_script'
         env:
-          SSH_OPTS: "-o StrictHostKeyChecking=no -i ~/.ssh/action_key -p ${{ inputs.ssh_port }}"
-          TARGET: "deploy@${{ inputs.public_ip }}"
+          SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/action_key -p ${{ inputs.ssh_port }}"
+          SCP_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/action_key -P ${{ inputs.ssh_port }}"
+          TARGET: "root@${{ inputs.public_ip }}"
         run: |
+          RUNTIME_FILE="templates/${{ inputs.action_type }}/runtime.json"
           SCRIPT=$(echo '${{ inputs.params }}' | jq -r '.script // empty')
           if [ -z "$SCRIPT" ]; then
             echo "No script specified in params"; exit 1
@@ -112,12 +114,14 @@ jobs:
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
             -d "{\"type\":\"running_script\",\"message\":\"Running $SCRIPT\"}"
-          scp $SSH_OPTS "$SCRIPT" "$TARGET:/tmp/$(basename $SCRIPT)"
-          ssh $SSH_OPTS "$TARGET" \
-            "CONTROL_PLANE_URL=${{ secrets.CONTROL_PLANE_URL }} \
-             CALLBACK_TOKEN=${{ secrets.CALLBACK_TOKEN }} \
-             ENVIRONMENT_ID=${{ inputs.environment_id }} \
-             chmod +x /tmp/$(basename $SCRIPT) && /tmp/$(basename $SCRIPT)"
+          scp $SCP_OPTS "$SCRIPT" "$TARGET:/tmp/$(basename $SCRIPT)"
+          ssh $SSH_OPTS "$TARGET" bash -c "'
+            export CONTROL_PLANE_URL=\"${{ secrets.CONTROL_PLANE_URL }}\"
+            export CALLBACK_TOKEN=\"${{ secrets.CALLBACK_TOKEN }}\"
+            export ENVIRONMENT_ID=\"${{ inputs.environment_id }}\"
+            chmod +x /tmp/$(basename $SCRIPT)
+            /tmp/$(basename $SCRIPT)
+          '"
 
       # ── redeploy ──────────────────────────────────────────────────────────────
       - name: Redeploy
