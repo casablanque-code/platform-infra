@@ -12,7 +12,9 @@
     "region",
     "server_type",
     "ssh_user",
-    "ssh_port"
+    "ssh_port",
+    "ssh_public_key",
+    "ssh_private_key"
   ],
 
   "post_provision": [

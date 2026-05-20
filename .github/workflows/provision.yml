@@ -132,14 +132,6 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
             --data @outputs.json
 
-      - name: Skip bootstrap (mock IP)
-        if: steps.outputs.outputs.is_mock == 'true'
-        run: |
-          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/event" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
-            -d '{"type":"bootstrap_skipped","message":"Mock IP detected — bootstrap skipped"}'
-
       - name: Setup SSH key
         if: steps.outputs.outputs.is_mock == 'false' && steps.runtime.outputs.has_bootstrap == 'true'
         run: |
@@ -153,6 +145,33 @@ jobs:
             IdentityFile ~/.ssh/bootstrap_key
             Port ${{ steps.outputs.outputs.ssh_port }}
           EOF
+
+      - name: Install environment SSH key on server
+        if: steps.outputs.outputs.is_mock == 'false' && steps.runtime.outputs.has_bootstrap == 'true'
+        working-directory: ${{ steps.runtime.outputs.module_path }}
+        env:
+          SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/bootstrap_key -p ${{ steps.outputs.outputs.ssh_port }}"
+          TARGET: "${{ steps.outputs.outputs.ssh_user }}@${{ steps.outputs.outputs.public_ip }}"
+        run: |
+          # Extract env public key from outputs (if present)
+          ENV_PUBKEY=$(jq -r '.ssh_public_key.value // empty' outputs.json)
+          if [ -n "$ENV_PUBKEY" ]; then
+            ssh $SSH_OPTS "$TARGET" bash -c "'
+              echo \"$ENV_PUBKEY\" >> ~/.ssh/authorized_keys
+              echo \"Environment SSH key installed\"
+            '"
+            echo "Environment public key added to authorized_keys"
+          else
+            echo "No ssh_public_key in outputs, skipping"
+          fi
+
+      - name: Skip bootstrap (mock IP)
+        if: steps.outputs.outputs.is_mock == 'true'
+        run: |
+          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/event" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
+            -d '{"type":"bootstrap_skipped","message":"Mock IP detected — bootstrap skipped"}'
 
       - name: Wait for SSH
         if: steps.outputs.outputs.is_mock == 'false' && steps.runtime.outputs.has_bootstrap == 'true'

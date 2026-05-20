@@ -1,6 +1,13 @@
 terraform {
   required_version = ">= 1.6.0"
 
+  required_providers {
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
+  }
+
   backend "s3" {
     # Injected via -backend-config flags in GitHub Actions workflow
   }
@@ -68,6 +75,11 @@ variable "ssh_user" {
   default = "root"
 }
 
+# ── Per-environment SSH key ────────────────────────────────────────────────────
+resource "tls_private_key" "env_key" {
+  algorithm = "ED25519"
+}
+
 # ── Resolved ───────────────────────────────────────────────────────────────────
 locals {
   resolved_region = coalesce(var.region, var.location, "unknown")
@@ -83,21 +95,37 @@ locals {
   public_ip = var.static_ip != "" ? var.static_ip : "203.0.113.10"
 }
 
+# ── Outputs ────────────────────────────────────────────────────────────────────
+
 output "public_ip" {
   value = local.public_ip
 }
+
 output "private_ip" {
   value = local.public_ip
 }
+
 output "region" {
   value = local.resolved_region
 }
+
 output "server_type" {
   value = local.resolved_size
 }
+
 output "ssh_user" {
   value = var.ssh_user
 }
+
 output "ssh_port" {
   value = 22
+}
+
+output "ssh_public_key" {
+  value = tls_private_key.env_key.public_key_openssh
+}
+
+output "ssh_private_key" {
+  value     = tls_private_key.env_key.private_key_openssh
+  sensitive = true
 }
