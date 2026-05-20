@@ -185,12 +185,14 @@ jobs:
           for SCRIPT in $SCRIPTS; do
             echo "─── Running $SCRIPT ───"
             scp $SCP_OPTS "$SCRIPT" "$TARGET:/tmp/$(basename $SCRIPT)"
-            ssh $SSH_OPTS "$TARGET" \
-              "CONTROL_PLANE_URL=${{ secrets.CONTROL_PLANE_URL }} \
-               CALLBACK_TOKEN=${{ secrets.CALLBACK_TOKEN }} \
-               ENVIRONMENT_ID=${{ inputs.environment_id }} \
-               ENV_PUBLIC_IP=${{ steps.outputs.outputs.public_ip }} \
-               chmod +x /tmp/$(basename $SCRIPT) && /tmp/$(basename $SCRIPT)"
+            ssh $SSH_OPTS "$TARGET" bash -c "'
+              export CONTROL_PLANE_URL=\"${{ secrets.CONTROL_PLANE_URL }}\"
+              export CALLBACK_TOKEN=\"${{ secrets.CALLBACK_TOKEN }}\"
+              export ENVIRONMENT_ID=\"${{ inputs.environment_id }}\"
+              export ENV_PUBLIC_IP=\"${{ steps.outputs.outputs.public_ip }}\"
+              chmod +x /tmp/$(basename $SCRIPT)
+              /tmp/$(basename $SCRIPT)
+            '"
             echo "─── $SCRIPT done ───"
           done
 
