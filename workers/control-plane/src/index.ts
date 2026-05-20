@@ -343,6 +343,20 @@ app.delete("/api/environments/:id", requireRole("operator"), async (c) => {
   }
 
   await c.env.DB.prepare(`
+    DELETE FROM actions
+    WHERE environment_id = ?
+  `)
+    .bind(id)
+    .run();
+
+  await c.env.DB.prepare(`
+    DELETE FROM nodes
+    WHERE environment_id = ?
+  `)
+    .bind(id)
+    .run();
+
+  await c.env.DB.prepare(`
     DELETE FROM deployment_outputs
     WHERE environment_id = ?
   `)
