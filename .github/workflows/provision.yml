@@ -110,6 +110,7 @@ jobs:
 
           PUBLIC_IP=$(jq -r '.public_ip.value // empty' outputs.json)
           SSH_PORT=$(jq -r '.ssh_port.value // "22"' outputs.json)
+          SSH_USER=$(jq -r '.ssh_user.value // "root"' outputs.json)
 
           # Mock if: no public_ip output, or it's the RFC 5737 test address
           if [ -z "$PUBLIC_IP" ] || echo "$PUBLIC_IP" | grep -q "^203\.0\.113\."; then
@@ -121,6 +122,7 @@ jobs:
           echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
           echo "ssh_port=$SSH_PORT" >> $GITHUB_OUTPUT
           echo "is_mock=$IS_MOCK" >> $GITHUB_OUTPUT
+          echo "ssh_user=$SSH_USER" >> $GITHUB_OUTPUT
 
       - name: Upload outputs to control plane
         working-directory: ${{ steps.runtime.outputs.module_path }}
@@ -161,7 +163,7 @@ jobs:
                    -o StrictHostKeyChecking=no \
                    -i ~/.ssh/bootstrap_key \
                    -p ${{ steps.outputs.outputs.ssh_port }} \
-                   deploy@${{ steps.outputs.outputs.public_ip }} "echo ok" 2>/dev/null; then
+                   ${{ steps.outputs.outputs.ssh_user }}@${{ steps.outputs.outputs.public_ip }} "echo ok" 2>/dev/null; then
               echo "SSH ready after ${i} attempts"
               exit 0
             fi
@@ -174,7 +176,7 @@ jobs:
         if: steps.outputs.outputs.is_mock == 'false' && steps.runtime.outputs.has_bootstrap == 'true'
         env:
           SSH_OPTS: "-o StrictHostKeyChecking=no -i ~/.ssh/bootstrap_key -p ${{ steps.outputs.outputs.ssh_port }}"
-          TARGET: "deploy@${{ steps.outputs.outputs.public_ip }}"
+          TARGET: "${{ steps.outputs.outputs.ssh_user }}@${{ steps.outputs.outputs.public_ip }}"
         run: |
           RUNTIME_FILE="templates/${{ inputs.template }}/runtime.json"
           SCRIPTS=$(jq -r '.post_provision[] | select(.type == "ssh_script") | .script' "$RUNTIME_FILE")

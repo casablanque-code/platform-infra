@@ -58,7 +58,7 @@ const templates: PlatformTemplate[] = [
     name: "Docker Host",
     description: "Ubuntu VM prepared for Docker workloads. Installs Docker CE + Compose on first boot.",
     category: "compute",
-    providers: ["hetzner", "oracle", "aws", "azure", "gcp", "yandex"],
+    providers: ["hetzner", "oracle", "aws", "azure", "gcp", "yandex", "ionos"],
     default_region: "eu-central",
     default_ttl_hours: 72,
   },
@@ -67,7 +67,7 @@ const templates: PlatformTemplate[] = [
     name: "PostgreSQL",
     description: "PostgreSQL instance provisioned and configured via infrastructure automation.",
     category: "database",
-    providers: ["hetzner", "oracle", "aws", "azure", "gcp", "yandex"],
+    providers: ["hetzner", "oracle", "aws", "azure", "gcp", "yandex", "ionos"],
     default_region: "eu-central",
     default_ttl_hours: 72,
     inputs: [

@@ -11,7 +11,6 @@ variable "region" {
   type    = string
   default = ""
 }
-
 variable "shape" {
   type    = string
   default = ""
@@ -22,7 +21,6 @@ variable "location" {
   type    = string
   default = ""
 }
-
 variable "server_type" {
   type    = string
   default = ""
@@ -51,18 +49,26 @@ variable "platform_id" {
   type    = string
   default = ""
 }
-
 variable "cores" {
   type    = number
   default = 2
 }
-
 variable "memory" {
   type    = number
   default = 2
 }
 
-# ── Resolved values ────────────────────────────────────────────────────────────
+# ── IONOS / static existing server ─────────────────────────────────────────────
+variable "static_ip" {
+  type    = string
+  default = ""
+}
+variable "ssh_user" {
+  type    = string
+  default = "root"
+}
+
+# ── Resolved ───────────────────────────────────────────────────────────────────
 locals {
   resolved_region = coalesce(var.region, var.location, "unknown")
   resolved_size = coalesce(
@@ -74,31 +80,24 @@ locals {
     var.platform_id,
     "unknown"
   )
+  public_ip = var.static_ip != "" ? var.static_ip : "203.0.113.10"
 }
-
-# ── Mock outputs ───────────────────────────────────────────────────────────────
-# Replace with real provider resources when credentials are available.
 
 output "public_ip" {
-  value = "203.0.113.10"
+  value = local.public_ip
 }
-
 output "private_ip" {
-  value = "10.0.0.10"
+  value = local.public_ip
 }
-
 output "region" {
   value = local.resolved_region
 }
-
 output "server_type" {
   value = local.resolved_size
 }
-
 output "ssh_user" {
-  value = "ubuntu"
+  value = var.ssh_user
 }
-
 output "ssh_port" {
   value = 22
 }
