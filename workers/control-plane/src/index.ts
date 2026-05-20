@@ -203,11 +203,11 @@ function requireRole(required: Role) {
 }
 
 function getActor(c: any): string {
-  return c._resolvedActor ?? getActor(c);
+  return c._resolvedActor ?? c.get?.("actor") ?? "unknown";
 }
 
 function getRole(c: any): Role {
-  return c._resolvedRole ?? getRole(c);
+  return c._resolvedRole ?? c.get?.("role") ?? "operator";
 }
 
 function findTemplate(id: string) {
@@ -377,6 +377,11 @@ app.delete("/api/environments/:id", requireRole("operator"), async (c) => {
     .bind(id)
     .run();
 
+  await writeAuditLog(
+    c.env.DB, getActor(c), getRole(c),
+    "environment.delete", "environment", id
+  );
+
   return c.json({
     ok: true,
     deleted_environment_id: id,
@@ -542,6 +547,12 @@ app.post("/api/environments", requireRole("operator"), async (c) => {
     envId,
     "queued",
     `Deployment queued by control plane using template ${template.id}`
+  );
+
+  await writeAuditLog(
+    c.env.DB, getActor(c), getRole(c),
+    "environment.create", "environment", envId, body.name,
+    { provider: body.provider, template: body.template }
   );
 
   return c.json({
@@ -1396,7 +1407,14 @@ app.get("/api/nodes/:id", async (c) => {
 
 app.delete("/api/nodes/:id", requireRole("operator"), async (c) => {
   const { id } = c.req.param();
+  const node = await c.env.DB.prepare(
+    `SELECT environment_name FROM nodes WHERE id = ?`
+  ).bind(id).first<{ environment_name: string }>();
   await c.env.DB.prepare(`DELETE FROM nodes WHERE id = ?`).bind(id).run();
+  await writeAuditLog(
+    c.env.DB, getActor(c), getRole(c),
+    "node.delete", "node", id, node?.environment_name
+  );
   return c.json({ ok: true });
 });
 
