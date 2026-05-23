@@ -727,8 +727,17 @@ async function reconcileExpiredEnvironments(env: Env) {
   `).all();
 
   for (const item of result.results as any[]) {
-    const createdAt = new Date(item.created_at as string).getTime();
     const ttlHours = Number(item.ttl_hours ?? 72);
+
+    // Skip environments with ∞ TTL (8760h = 1 year = no auto-destroy)
+    if (ttlHours >= 8760) continue;
+
+    // Force UTC parsing — add Z if missing
+    const rawCreatedAt = item.created_at as string;
+    const createdAtStr = rawCreatedAt.endsWith("Z") || rawCreatedAt.includes("+")
+      ? rawCreatedAt
+      : rawCreatedAt + "Z";
+    const createdAt = new Date(createdAtStr).getTime();
 
     const expiresAt = createdAt + ttlHours * 60 * 60 * 1000;
 
@@ -826,8 +835,9 @@ async function reconcileStuckDeployments(env: Env) {
   const maxRetries = 3;
 
   for (const item of result.results as any[]) {
+    const rawCreated = item.created_at as string;
     const createdAt = new Date(
-      item.created_at as string
+      rawCreated.endsWith("Z") || rawCreated.includes("+") ? rawCreated : rawCreated + "Z"
     ).getTime();
 
     const ageMinutes =
@@ -848,13 +858,18 @@ async function reconcileStuckDeployments(env: Env) {
         .bind(item.id)
         .run();
 
+      // For destroy deployments, mark as destroyed not failed
+      const isDestroyDeployment = (item.status as string).includes("destroy") ||
+        (item.original_status as string)?.includes("destroy");
+      const envStatus = isDestroyDeployment ? "destroyed" : "failed";
+
       await env.DB.prepare(`
         UPDATE environments
-        SET status = 'failed',
+        SET status = ?,
             updated_at = ?
         WHERE id = ?
       `)
-        .bind(new Date().toISOString(), item.environment_id)
+        .bind(envStatus, new Date().toISOString(), item.environment_id)
         .run();
 
       await addDeploymentEvent(
@@ -935,8 +950,13 @@ async function syncGithubRuns(env: Env) {
 
     const data: any = await res.json();
 
+    // Match any workflow run (provision or destroy) — filter by recency
+    const deploymentCreatedAt = new Date(item.created_at as string).getTime();
     const run = data.workflow_runs?.find((r: any) => {
-      return r.name === "Provision Environment";
+      const runCreatedAt = new Date(r.created_at).getTime();
+      // Must be created after this deployment was dispatched
+      return runCreatedAt >= deploymentCreatedAt - 60_000 &&
+        (r.name === "Provision Environment" || r.name === "Destroy Environment");
     });
 
     if (!run) continue;

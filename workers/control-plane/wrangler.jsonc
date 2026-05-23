@@ -5,10 +5,10 @@
   "compatibility_date": "2026-05-12",
 
   "triggers": {
-  "crons": [
-    "* * * * *"
-  ]
-},
+    "crons": [
+      "* * * * *"
+    ]
+  },
 
   "assets": {
     "directory": "../../apps/dashboard/dist",
@@ -28,6 +28,7 @@
     "GITHUB_REPO": "platform-infra",
     "GITHUB_WORKFLOW": "provision.yml",
     "GITHUB_DESTROY_WORKFLOW": "destroy.yml",
+    "GITHUB_ACTION_WORKFLOW": "action.yml",
     "GITHUB_REF": "main"
   }
 }
