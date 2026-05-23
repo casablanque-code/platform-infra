@@ -505,6 +505,11 @@ app.post("/api/environments/:id/destroy", requireRole("operator"), async (c) => 
     "environment.destroy", "environment", id, environment.name
   );
 
+    // Remove node from inventory — machine will be destroyed
+    await c.env.DB.prepare(
+      `DELETE FROM nodes WHERE environment_id = ?`
+    ).bind(id).run();
+
   return c.json({
     ok: true,
     deployment_id: deploymentId,
