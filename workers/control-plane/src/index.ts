@@ -16,6 +16,7 @@ type Env = {
   GITHUB_ACTION_WORKFLOW: string;
   GITHUB_REF: string;
   ADMIN_KEY: string;
+  ENCRYPTION_KEY: string;
 };
 
 type TemplateInput = {
@@ -141,6 +142,47 @@ async function writeAuditLog(
       new Date().toISOString()
     )
     .run();
+}
+
+// ── Encryption helpers ────────────────────────────────────────────────────────
+
+const SENSITIVE_KEYS = new Set([
+  "ssh_private_key",
+  "db_password",
+  "db_url",
+]);
+
+async function getEncryptionKey(rawKey: string): Promise<CryptoKey> {
+  const keyBytes = new TextEncoder().encode(rawKey.padEnd(32, "0").slice(0, 32));
+  return crypto.subtle.importKey(
+    "raw", keyBytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]
+  );
+}
+
+async function encryptValue(value: string, rawKey: string): Promise<string> {
+  if (!rawKey) return value;
+  const key = await getEncryptionKey(rawKey);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encoded = new TextEncoder().encode(value);
+  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoded);
+  const ivB64 = btoa(String.fromCharCode(...iv));
+  const ctB64 = btoa(String.fromCharCode(...new Uint8Array(encrypted)));
+  return `enc:${ivB64}:${ctB64}`;
+}
+
+async function decryptValue(value: string, rawKey: string): Promise<string> {
+  if (!rawKey || !value.startsWith("enc:")) return value;
+  try {
+    const parts = value.split(":");
+    if (parts.length !== 3) return value;
+    const iv = Uint8Array.from(atob(parts[1]), c => c.charCodeAt(0));
+    const ct = Uint8Array.from(atob(parts[2]), c => c.charCodeAt(0));
+    const key = await getEncryptionKey(rawKey);
+    const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+    return new TextDecoder().decode(decrypted);
+  } catch {
+    return value;
+  }
 }
 
 async function resolveRole(
@@ -302,7 +344,17 @@ app.get("/api/environments/:id/outputs", async (c) => {
     .bind(id)
     .all();
 
-  return c.json(result.results);
+  // Decrypt sensitive values before returning to client
+  const decrypted = await Promise.all(
+    (result.results as any[]).map(async row => ({
+      ...row,
+      output_value: SENSITIVE_KEYS.has(row.output_key) && c.env.ENCRYPTION_KEY
+        ? await decryptValue(row.output_value, c.env.ENCRYPTION_KEY)
+        : row.output_value,
+    }))
+  );
+
+  return c.json(decrypted);
 });
 
 app.delete("/api/environments/:id", requireRole("operator"), async (c) => {
@@ -1081,6 +1133,12 @@ app.post("/api/deployments/:id/outputs", async (c) => {
 
   for (const [key, value] of Object.entries(outputs)) {
     const typedValue = value as any;
+    const rawValue = JSON.stringify(typedValue.value);
+
+    // Encrypt sensitive outputs before storing in D1
+    const storedValue = SENSITIVE_KEYS.has(key) && c.env.ENCRYPTION_KEY
+      ? await encryptValue(rawValue, c.env.ENCRYPTION_KEY)
+      : rawValue;
 
     await c.env.DB.prepare(`
       INSERT INTO deployment_outputs (
@@ -1098,7 +1156,7 @@ app.post("/api/deployments/:id/outputs", async (c) => {
         id,
         envId,
         key,
-        JSON.stringify(typedValue.value),
+        storedValue,
         new Date().toISOString()
       )
       .run();
@@ -1470,6 +1528,8 @@ app.post("/api/environments/:id/actions", requireRole("operator"), async (c) => 
   )
     .bind(id)
     .first<{ output_value: string }>();
+
+  // Note: public_ip and ssh_port are not sensitive, no decryption needed
 
   const actionId = crypto.randomUUID();
   const now = new Date().toISOString();
