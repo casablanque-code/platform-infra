@@ -19,7 +19,6 @@ variable "resource_type" {
   default = "docker_host"
 }
 
-# Standard provider vars (Полностью очищены от точек с запятой)
 variable "region" {
   type    = string
   default = ""
@@ -98,7 +97,10 @@ terraform {
 # ── Mock resource via gateway ──────────────────────────────────────────────────
 
 resource "terraform_data" "mock_server" {
-  input = var.resource_type
+  # МАГИЯ СОХРАНЕНИЯ: Если локальный файл с ID существует в папке модуля, 
+  # мы читаем его контент и намертво сохраняем в S3 стейт. 
+  # Если файла нет (самый первый запуск) — пишем тип. В процессе apply значение обновится на реальный ID.
+  input = fileexists("${path.module}/id.txt") ? trimspace(file("${path.module}/id.txt")) : var.resource_type
 
   triggers_replace = {
     gateway_url   = var.gateway_url
@@ -121,13 +123,11 @@ resource "terraform_data" "mock_server" {
 
       echo "→ Creating resource type=$TYPE on $GATEWAY..."
       
-      # ИСПРАВЛЕНИЕ: Убираем флаг -f у curl, чтобы скрипт не падал из-за HTTP-статусов шлюза.
-      # Передаем только то, что шлюз реально ждет.
+      # Убрали флаг -f, чтобы кривые HTTP-статусы от mock-шлюза не роняли пайплайн
       RESPONSE=$(curl -s -X POST "$GATEWAY/v1/resources" \
         -H "Content-Type: application/json" \
         -d "{\"type\":\"$TYPE\"}")
 
-      # Проверяем, получили ли мы вообще JSON с ID
       RESOURCE_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
       
       if [ -z "$RESOURCE_ID" ] || [ "$RESOURCE_ID" = "null" ]; then
@@ -149,8 +149,8 @@ resource "terraform_data" "mock_server" {
         ATTEMPTS=$((ATTEMPTS + 1))
       done
 
-      # Локально сохраняем (для дестроя на этом же раннере, если применимо)
-      echo "$RESOURCE_ID" > /tmp/mock_resource_id.txt
+      # Записываем ID во временный файл ВНУТРИ папки модуля, чтобы OpenTofu засинкал его в стейт
+      echo "$RESOURCE_ID" > "${path.module}/id.txt"
       echo "→ Resource $RESOURCE_ID is running"
     BASH
   }
@@ -162,51 +162,34 @@ resource "terraform_data" "mock_server" {
     command     = <<-BASH
       set -euo pipefail
       GATEWAY="${self.triggers_replace.gateway_url}"
-      TYPE="${self.triggers_replace.resource_type}"
+      
+      # ЖЕЛЕЗНО: Читаем ID напрямую из сохраненного S3 стейта. 
+      # Нам больше не нужны локальные файлы на диске и слепой поиск по типу!
+      RESOURCE_ID="${self.output}"
 
       if [ -z "$GATEWAY" ]; then
         echo "No gateway, skipping mock destroy"
         exit 0
       fi
 
-      RESOURCE_ID=""
-
-      # Шаг 1: Пытаемся прочитать из локального файла
-      if [ -f /tmp/mock_resource_id.txt ]; then
-        RESOURCE_ID=$(cat /tmp/mock_resource_id.txt)
-      fi
-
-      # Шаг 2: АВТОНОМНЫЙ ПОИСК (Если раннер новый и файла нет)
-      # Запрашиваем список всех ресурсов со шлюза, ищем наш тип (например, docker_host)
-      if [ -z "$RESOURCE_ID" ]; then
-        echo "Local file not found. Fetching resource ID from gateway API for type $TYPE..."
-        
-        # Запрашиваем список. Предполагаем, что эндпоинт /v1/resources возвращает массив объектов
-        # Если структура другая (например, под ключом .resources), поправь jq путь.
-        RESOURCES_LIST=$(curl -s "$GATEWAY/v1/resources" || echo "[]")
-        
-        # Ищем первый попавшийся ресурс с нужным типом
-        RESOURCE_ID=$(echo "$RESOURCES_LIST" | jq -r ".[] | select(.type==\"$TYPE\") | .id" | head -n 1)
-      fi
-
-      if [ -z "$RESOURCE_ID" ] || [ "$RESOURCE_ID" = "null" ]; then
-        echo "No active resource found on gateway for type $TYPE, nothing to destroy."
+      # Если стейт не обновился (например, упал curl на создании), 
+      # там будет лежать дефолтное имя типа (docker_host). Защищаем дестрой.
+      if [ -z "$RESOURCE_ID" ] || [ "$RESOURCE_ID" = "docker_host" ] || [ "$RESOURCE_ID" = "null" ]; then
+        echo "No valid resource ID found in state, skipping destroy"
         exit 0
       fi
 
-      echo "→ Destroying resource $RESOURCE_ID from $GATEWAY..."
+      echo "→ Destroying EXACT resource $RESOURCE_ID from $GATEWAY..."
       
-      # Удаляем по реальному ID, найденному динамически
+      # Удаляем СТРОГО тот ID, который был создан именно этой средой
       curl -s -X POST "$GATEWAY/v1/resources/delete" \
         -H "Content-Type: application/json" \
         -d "{\"id\":\"$RESOURCE_ID\"}"
 
-      rm -f /tmp/mock_resource_id.txt
       echo "→ Resource $RESOURCE_ID successfully destroyed"
     BASH
   }
 }
-
 
 # ── Locals ────────────────────────────────────────────────────────────────────
 
@@ -217,7 +200,6 @@ locals {
     var.shape, var.server_type, var.platform_id, "mock"
   )
   
-  # Отдаем тестовую подсеть платформы. Воркфлоу provision.yml увидит ее и включит is_mock=true
   public_ip = var.static_ip != "" ? var.static_ip : "203.0.113.1"
 }
 
@@ -248,7 +230,6 @@ output "ssh_port" {
 }
 
 output "ssh_public_key" {
-  # Если работаем в mock-режиме, гасим вывод ключа, защищая шаги SSH
   value = var.static_ip != "" ? tls_private_key.env_key.public_key_openssh : ""
 }
 
