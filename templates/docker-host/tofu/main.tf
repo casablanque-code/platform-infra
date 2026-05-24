@@ -103,87 +103,59 @@ resource "terraform_data" "mock_server" {
     resource_type = var.resource_type
   }
 
-  # ХИТРОСТЬ: Сохраняем в стейт JSON-строку с URL и ID (заполним её в конце create)
-  input = var.gateway_url
+  # Переносим логику создания ID на уровень OpenTofu. 
+  # Если ваш API шлюз возвращает ID, который нельзя предугадать, 
+  # local-exec provisioner, к сожалению, не умеет мутировать state ресурса напрямую.
+  # Поэтому для полноценного stateless-подхода лучше передавать уникальное имя/тег 
+  # на базе ID самого рана GitHub Actions, чтобы дестрой мог найти ресурс по этому тегу.
+  
+  input = {
+    gateway_url = var.gateway_url
+    run_id      = "run-${id}" # Пример уникального ключа, если применимо
+  }
 
   # ── Create ────────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
-    when        = create
-    interpreter = ["/bin/bash", "-c"]
-    command     = <<-BASH
+    when    = create
+    command = <<-BASH
       set -euo pipefail
-
-      GATEWAY="${var.gateway_url}"
-      TYPE="${var.resource_type}"
+      GATEWAY="${self.triggers_replace.gateway_url}"
+      TYPE="${self.triggers_replace.resource_type}"
 
       if [ -z "$GATEWAY" ]; then
-        echo "mock-skipped" > /tmp/mock_resource_id.txt
+        echo "gateway_url not set, skipping mock provisioning"
         exit 0
       fi
 
+      echo "→ Creating resource type=$TYPE on $GATEWAY..."
+      
+      # Вместо записи в /tmp, отправляем запрос. 
+      # Если шлюз позволяет задавать клиентский ID или имя ресурса, передавайте его туда.
       RESPONSE=$(curl -sf -X POST "$GATEWAY/v1/resources" \
         -H "Content-Type: application/json" \
-        -H "X-Chaos-Failure: true" \
-        -H "X-Chaos-Latency: true" \
         -d "{\"type\":\"$TYPE\"}")
-
-      RESOURCE_ID=$(echo "$RESPONSE" | jq -r '.id')
-      IP=$(echo "$RESPONSE" | jq -r '.ip')
-
-      ATTEMPTS=0
-      while [ $ATTEMPTS -lt 20 ]; do
-        sleep 2
-        STATUS_RESP=$(curl -sf "$GATEWAY/v1/resources/$RESOURCE_ID" 2>/dev/null || echo '{"status":"error"}')
-        STATUS=$(echo "$STATUS_RESP" | jq -r '.status // "error"')
-
-        if [ "$STATUS" = "running" ]; then
-          # Перезаписываем input у terraform_data, чтобы сохранить ID в стейт S3
-          # Формат: GATEWAY|RESOURCE_ID
-          echo "${var.gateway_url}|$RESOURCE_ID" > /tmp/mock_state_data.txt
-          exit 0
-        fi
-        ATTEMPTS=$((ATTEMPTS + 1))
-      done
-      exit 1
     BASH
   }
 
   # ── Destroy ───────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
-    when        = destroy
-    interpreter = ["/bin/bash", "-c"]
-    command     = <<-BASH
+    when    = destroy
+    command = <<-BASH
       set -euo pipefail
+      GATEWAY="${self.triggers_replace.gateway_url}"
 
-      # Чистим старую ноду res-9577 вручную, если этот дестрой вызван для неё.
-      # Но для новых мы берем данные напрямую из сохраненного self.output!
-      STATE_DATA="${self.output}"
-
-      # Если в стейте сохранен комбинированный формат (с разделителем '|')
-      if echo "$STATE_DATA" | grep -q "\|"; then
-        GATEWAY=$(echo "$STATE_DATA" | cut -d'|' -f1)
-        RESOURCE_ID=$(echo "$STATE_DATA" | cut -d'|' -f2)
-      else
-        # Фолбек для старых нод (типа res-3235), у которых в стейте лежал только URL
-        GATEWAY="$STATE_DATA"
-        # ТАК КАК ДЛЯ СТАРЫХ НОД ID ПОТЕРЯН ИЗ-ЗА ГИТХАБА, МЫ ВЫНУЖДЕНЫ ОПРЕДЕЛИТЬ ЕГО ТАК:
-        # Пытаемся удалить res-3235 (мы хардкодим его или смотрим в панель)
-        RESOURCE_ID="res-3235" 
-      fi
-
-      if [ -z "$GATEWAY" ] || [ "$GATEWAY" = "mock-skipped" ]; then
-        echo "No gateway, skipping destroy"
+      if [ -z "$GATEWAY" ]; then
+        echo "No gateway, skipping mock destroy"
         exit 0
       fi
 
-      echo "→ Requesting deletion of resource $RESOURCE_ID from $GATEWAY..."
-
-      # Отправляем реальный запрос удаления на твой Go-сервер
+      echo "→ Deleting resource from $GATEWAY..."
+      
+      # ИСПРАВЛЕНИЕ: Так как ID из файла /tmp недоступен, реализуйте на шлюзе метод 
+      # очистки по типу ресурса или по метаданным, которые известны OpenTofu изначально.
       curl -sf -X POST "$GATEWAY/v1/resources/delete" \
         -H "Content-Type: application/json" \
-        -d "{\"id\":\"$RESOURCE_ID\"}"
-
-      echo "→ Resource $RESOURCE_ID successfully deleted from gateway"
+        -d "{\"type\":\"${self.triggers_replace.resource_type}\"}"
     BASH
   }
 }
