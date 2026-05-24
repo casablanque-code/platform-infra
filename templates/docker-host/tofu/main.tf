@@ -97,10 +97,8 @@ terraform {
 # ── Mock resource via gateway ──────────────────────────────────────────────────
 
 resource "terraform_data" "mock_server" {
-  # МАГИЯ СОХРАНЕНИЯ: Если локальный файл с ID существует в папке модуля, 
-  # мы читаем его контент и намертво сохраняем в S3 стейт. 
-  # Если файла нет (самый первый запуск) — пишем тип. В процессе apply значение обновится на реальный ID.
-  input = fileexists("${path.module}/id.txt") ? trimspace(file("${path.module}/id.txt")) : var.resource_type
+  # Генерируем случайный UUID для этого рана. Он запишется в стейт при создании.
+  input = uuid()
 
   triggers_replace = {
     gateway_url   = var.gateway_url
@@ -115,27 +113,29 @@ resource "terraform_data" "mock_server" {
       set -euo pipefail
       GATEWAY="${self.triggers_replace.gateway_url}"
       TYPE="${self.triggers_replace.resource_type}"
+      RUN_TOKEN="${self.output}"
 
       if [ -z "$GATEWAY" ]; then
         echo "gateway_url not set, skipping mock provisioning"
         exit 0
       fi
 
-      echo "→ Creating resource type=$TYPE on $GATEWAY..."
+      echo "→ Creating resource type=$TYPE on $GATEWAY with client token $RUN_TOKEN..."
       
-      # Убрали флаг -f, чтобы кривые HTTP-статусы от mock-шлюза не роняли пайплайн
+      # Отправляем запрос. Мы передаем RUN_TOKEN в поле client_token.
+      # Если твой Go-шлюз сам генерирует ID (например, res-9603), мы заставим его 
+      # привязать этот ID к нашему RUN_TOKEN, который лежит в S3 стейте!
       RESPONSE=$(curl -s -X POST "$GATEWAY/v1/resources" \
         -H "Content-Type: application/json" \
-        -d "{\"type\":\"$TYPE\"}")
+        -d "{\"type\":\"$TYPE\", \"client_token\":\"$RUN_TOKEN\"}")
 
       RESOURCE_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
-      
       if [ -z "$RESOURCE_ID" ] || [ "$RESOURCE_ID" = "null" ]; then
         echo "Error: Gateway returned invalid response: $RESPONSE"
         exit 1
       fi
 
-      echo "Gateway allocated ID: $RESOURCE_ID"
+      echo "Gateway allocated ID: $RESOURCE_ID for token: $RUN_TOKEN"
 
       # Цикл ожидания статуса running
       ATTEMPTS=0
@@ -149,8 +149,6 @@ resource "terraform_data" "mock_server" {
         ATTEMPTS=$((ATTEMPTS + 1))
       done
 
-      # Записываем ID во временный файл ВНУТРИ папки модуля, чтобы OpenTofu засинкал его в стейт
-      echo "$RESOURCE_ID" > "${path.module}/id.txt"
       echo "→ Resource $RESOURCE_ID is running"
     BASH
   }
@@ -162,26 +160,31 @@ resource "terraform_data" "mock_server" {
     command     = <<-BASH
       set -euo pipefail
       GATEWAY="${self.triggers_replace.gateway_url}"
-      
-      # ЖЕЛЕЗНО: Читаем ID напрямую из сохраненного S3 стейта. 
-      # Нам больше не нужны локальные файлы на диске и слепой поиск по типу!
-      RESOURCE_ID="${self.output}"
+      RUN_TOKEN="${self.output}" # UUID гарантированно скачается из S3 стейта!
 
-      if [ -z "$GATEWAY" ]; then
-        echo "No gateway, skipping mock destroy"
+      if [ -z "$GATEWAY" ] || [ -z "$RUN_TOKEN" ]; then
+        echo "No gateway or token, skipping mock destroy"
         exit 0
       fi
 
-      # Если стейт не обновился (например, упал curl на создании), 
-      # там будет лежать дефолтное имя типа (docker_host). Защищаем дестрой.
-      if [ -z "$RESOURCE_ID" ] || [ "$RESOURCE_ID" = "docker_host" ] || [ "$RESOURCE_ID" = "null" ]; then
-        echo "No valid resource ID found in state, skipping destroy"
+      echo "→ Requesting destroy from gateway for client token $RUN_TOKEN..."
+
+      # Шаг 1: Так как шлюз генерирует случайный ID, мы сначала спрашиваем у шлюза 
+      # реальный ID ресурса, который привязан к нашему уникальному RUN_TOKEN.
+      # Для этого делаем GET-запрос в список ресурсов.
+      RESOURCES_LIST=$(curl -s "$GATEWAY/v1/resources" || echo "[]")
+      
+      # Ищем в списке строку, у которой client_token равен нашему UUID из стейта
+      RESOURCE_ID=$(echo "$RESOURCES_LIST" | jq -r ".[] | select(.client_token==\"$RUN_TOKEN\") | .id" | head -n 1)
+
+      if [ -z "$RESOURCE_ID" ] || [ "$RESOURCE_ID" = "null" ]; then
+        echo "No active resource found on gateway for token $RUN_TOKEN. Already deleted?"
         exit 0
       fi
 
-      echo "→ Destroying EXACT resource $RESOURCE_ID from $GATEWAY..."
+      echo "→ Found exact match! Destroying resource $RESOURCE_ID..."
       
-      # Удаляем СТРОГО тот ID, который был создан именно этой средой
+      # Шаг 2: Удаляем СТРОГО найденный ID
       curl -s -X POST "$GATEWAY/v1/resources/delete" \
         -H "Content-Type: application/json" \
         -d "{\"id\":\"$RESOURCE_ID\"}"
