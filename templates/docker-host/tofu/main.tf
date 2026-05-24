@@ -98,10 +98,7 @@ terraform {
 # ── Mock resource via gateway ──────────────────────────────────────────────────
 
 resource "terraform_data" "mock_server" {
-  # ИСПРАВЛЕНИЕ: Генерируем уникальный ID на стороне OpenTofu.
-  # Этот ID гарантированно улетает в S3-стейт при создании (apply)
-  # и 100% скачается из S3 при удалении (destroy) на любом раннере!
-  input = "res-${substr(uuid(), 0, 8)}"
+  input = var.resource_type
 
   triggers_replace = {
     gateway_url   = var.gateway_url
@@ -116,26 +113,35 @@ resource "terraform_data" "mock_server" {
       set -euo pipefail
       GATEWAY="${self.triggers_replace.gateway_url}"
       TYPE="${self.triggers_replace.resource_type}"
-      RESOURCE_ID="${self.output}" # Берём сгенерированный ID из стейта
 
       if [ -z "$GATEWAY" ]; then
         echo "gateway_url not set, skipping mock provisioning"
         exit 0
       fi
 
-      echo "→ Creating resource $RESOURCE_ID (type=$TYPE) on $GATEWAY..."
+      echo "→ Creating resource type=$TYPE on $GATEWAY..."
       
-      # Передаем НАШ сгенерированный ID в шлюз, чтобы он создал ресурс именно с ним.
-      # Никакого автогена на стороне Go шлюза, полный контроль у OpenTofu.
-      RESPONSE=$(curl -sf -X POST "$GATEWAY/v1/resources" \
+      # ИСПРАВЛЕНИЕ: Убираем флаг -f у curl, чтобы скрипт не падал из-за HTTP-статусов шлюза.
+      # Передаем только то, что шлюз реально ждет.
+      RESPONSE=$(curl -s -X POST "$GATEWAY/v1/resources" \
         -H "Content-Type: application/json" \
-        -d "{\"id\":\"$RESOURCE_ID\", \"type\":\"$TYPE\"}")
+        -d "{\"type\":\"$TYPE\"}")
 
-      # Оригинальный цикл ожидания статуса running
+      # Проверяем, получили ли мы вообще JSON с ID
+      RESOURCE_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
+      
+      if [ -z "$RESOURCE_ID" ] || [ "$RESOURCE_ID" = "null" ]; then
+        echo "Error: Gateway returned invalid response: $RESPONSE"
+        exit 1
+      fi
+
+      echo "Gateway allocated ID: $RESOURCE_ID"
+
+      # Цикл ожидания статуса running
       ATTEMPTS=0
       while [ $ATTEMPTS -lt 20 ]; do
         sleep 2
-        STATUS=$(curl -sf "$GATEWAY/v1/resources/$RESOURCE_ID" | jq -r '.status')
+        STATUS=$(curl -s "$GATEWAY/v1/resources/$RESOURCE_ID" | jq -r '.status // "unknown"')
         echo "Resource $RESOURCE_ID status: $STATUS"
         if [ "$STATUS" = "running" ]; then
           break
@@ -143,7 +149,9 @@ resource "terraform_data" "mock_server" {
         ATTEMPTS=$((ATTEMPTS + 1))
       done
 
-      echo "→ Resource $RESOURCE_ID is successfully running"
+      # Локально сохраняем (для дестроя на этом же раннере, если применимо)
+      echo "$RESOURCE_ID" > /tmp/mock_resource_id.txt
+      echo "→ Resource $RESOURCE_ID is running"
     BASH
   }
 
@@ -154,25 +162,52 @@ resource "terraform_data" "mock_server" {
     command     = <<-BASH
       set -euo pipefail
       GATEWAY="${self.triggers_replace.gateway_url}"
-      RESOURCE_ID="${self.output}" # Идеально! ID скачался из S3-стейта на новом раннере
+      TYPE="${self.triggers_replace.resource_type}"
 
-      if [ -z "$GATEWAY" ] || [ -z "$RESOURCE_ID" ]; then
-        echo "No gateway or resource ID, skipping mock destroy"
+      if [ -z "$GATEWAY" ]; then
+        echo "No gateway, skipping mock destroy"
+        exit 0
+      fi
+
+      RESOURCE_ID=""
+
+      # Шаг 1: Пытаемся прочитать из локального файла
+      if [ -f /tmp/mock_resource_id.txt ]; then
+        RESOURCE_ID=$(cat /tmp/mock_resource_id.txt)
+      fi
+
+      # Шаг 2: АВТОНОМНЫЙ ПОИСК (Если раннер новый и файла нет)
+      # Запрашиваем список всех ресурсов со шлюза, ищем наш тип (например, docker_host)
+      if [ -z "$RESOURCE_ID" ]; then
+        echo "Local file not found. Fetching resource ID from gateway API for type $TYPE..."
+        
+        # Запрашиваем список. Предполагаем, что эндпоинт /v1/resources возвращает массив объектов
+        # Если структура другая (например, под ключом .resources), поправь jq путь.
+        RESOURCES_LIST=$(curl -s "$GATEWAY/v1/resources" || echo "[]")
+        
+        # Ищем первый попавшийся ресурс с нужным типом
+        RESOURCE_ID=$(echo "$RESOURCES_LIST" | jq -r ".[] | select(.type==\"$TYPE\") | .id" | head -n 1)
+      fi
+
+      if [ -z "$RESOURCE_ID" ] || [ "$RESOURCE_ID" = "null" ]; then
+        echo "No active resource found on gateway for type $TYPE, nothing to destroy."
         exit 0
       fi
 
       echo "→ Destroying resource $RESOURCE_ID from $GATEWAY..."
       
-      # Отправляем запрос на удаление по ID, который лежал в S3.
-      # Вызывается твой РЕАЛЬНЫЙ рабочий эндпоинт удаления.
-      curl -sf -X POST "$GATEWAY/v1/resources/delete" \
+      # Удаляем по реальному ID, найденному динамически
+      curl -s -X POST "$GATEWAY/v1/resources/delete" \
         -H "Content-Type: application/json" \
         -d "{\"id\":\"$RESOURCE_ID\"}"
-        
+
+      rm -f /tmp/mock_resource_id.txt
       echo "→ Resource $RESOURCE_ID successfully destroyed"
     BASH
   }
 }
+
+
 # ── Locals ────────────────────────────────────────────────────────────────────
 
 locals {
