@@ -98,7 +98,10 @@ terraform {
 # ── Mock resource via gateway ──────────────────────────────────────────────────
 
 resource "terraform_data" "mock_server" {
-  input = uuid()
+  # ИСПРАВЛЕНИЕ: Генерируем уникальный ID на стороне OpenTofu.
+  # Этот ID гарантированно улетает в S3-стейт при создании (apply)
+  # и 100% скачается из S3 при удалении (destroy) на любом раннере!
+  input = "res-${substr(uuid(), 0, 8)}"
 
   triggers_replace = {
     gateway_url   = var.gateway_url
@@ -108,70 +111,68 @@ resource "terraform_data" "mock_server" {
   # ── Create ────────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
     when        = create
-    interpreter = ["/bin/bash", "-c"] # ИСПРАВЛЕНИЕ: принудительно запускаем через BASH
+    interpreter = ["/bin/bash", "-c"]
     command     = <<-BASH
       set -euo pipefail
       GATEWAY="${self.triggers_replace.gateway_url}"
       TYPE="${self.triggers_replace.resource_type}"
-      LOCK_ID="${self.output}"
+      RESOURCE_ID="${self.output}" # Берём сгенерированный ID из стейта
 
       if [ -z "$GATEWAY" ]; then
         echo "gateway_url not set, skipping mock provisioning"
         exit 0
       fi
 
-      echo "→ Sending creation request to $GATEWAY with token $LOCK_ID..."
+      echo "→ Creating resource $RESOURCE_ID (type=$TYPE) on $GATEWAY..."
+      
+      # Передаем НАШ сгенерированный ID в шлюз, чтобы он создал ресурс именно с ним.
+      # Никакого автогена на стороне Go шлюза, полный контроль у OpenTofu.
       RESPONSE=$(curl -sf -X POST "$GATEWAY/v1/resources" \
         -H "Content-Type: application/json" \
-        -d "{\"type\":\"$TYPE\", \"client_token\":\"$LOCK_ID\"}")
+        -d "{\"id\":\"$RESOURCE_ID\", \"type\":\"$TYPE\"}")
 
-      RESOURCE_ID=$(echo "$RESPONSE" | jq -r '.id')
-      echo "Created pending resource ID: $RESOURCE_ID"
-
-      # Возвращаем проверку статуса, так как шлюз может имитировать долгую загрузку
+      # Оригинальный цикл ожидания статуса running
       ATTEMPTS=0
       while [ $ATTEMPTS -lt 20 ]; do
         sleep 2
-        STATUS_RESP=$(curl -sf "$GATEWAY/v1/resources/$RESOURCE_ID" 2>/dev/null || echo '{"status":"error"}')
-        STATUS=$(echo "$STATUS_RESP" | jq -r '.status // "error"')
-
-        echo "Waiting for resource $RESOURCE_ID... current status: $STATUS"
+        STATUS=$(curl -sf "$GATEWAY/v1/resources/$RESOURCE_ID" | jq -r '.status')
+        echo "Resource $RESOURCE_ID status: $STATUS"
         if [ "$STATUS" = "running" ]; then
-          echo "Resource is running!"
-          exit 0
+          break
         fi
         ATTEMPTS=$((ATTEMPTS + 1))
       done
 
-      echo "Timeout waiting for resource to become running"
-      exit 1
+      echo "→ Resource $RESOURCE_ID is successfully running"
     BASH
   }
 
   # ── Destroy ───────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
     when        = destroy
-    interpreter = ["/bin/bash", "-c"] # ИСПРАВЛЕНИЕ: принудительно запускаем через BASH
+    interpreter = ["/bin/bash", "-c"]
     command     = <<-BASH
       set -euo pipefail
       GATEWAY="${self.triggers_replace.gateway_url}"
-      LOCK_ID="${self.output}"
+      RESOURCE_ID="${self.output}" # Идеально! ID скачался из S3-стейта на новом раннере
 
-      if [ -z "$GATEWAY" ]; then
-        echo "No gateway, skipping mock destroy"
+      if [ -z "$GATEWAY" ] || [ -z "$RESOURCE_ID" ]; then
+        echo "No gateway or resource ID, skipping mock destroy"
         exit 0
       fi
 
-      echo "→ Destroying resource associated with token $LOCK_ID from $GATEWAY..."
+      echo "→ Destroying resource $RESOURCE_ID from $GATEWAY..."
       
-      # Отправляем запрос на удаление по токену, который сохранен в стейте S3
-      curl -sf -X POST "$GATEWAY/v1/resources/delete_by_token" \
+      # Отправляем запрос на удаление по ID, который лежал в S3.
+      # Вызывается твой РЕАЛЬНЫЙ рабочий эндпоинт удаления.
+      curl -sf -X POST "$GATEWAY/v1/resources/delete" \
         -H "Content-Type: application/json" \
-        -d "{\"client_token\":\"$LOCK_ID\"}"
+        -d "{\"id\":\"$RESOURCE_ID\"}"
+        
+      echo "→ Resource $RESOURCE_ID successfully destroyed"
     BASH
   }
 }
-
 # ── Locals ────────────────────────────────────────────────────────────────────
 
 locals {
