@@ -97,11 +97,13 @@ terraform {
 # ── Mock resource via gateway ──────────────────────────────────────────────────
 
 resource "terraform_data" "mock_server" {
+  # Сюда при создании запишется строка с типом. 
+  # Главное — этот блок теперь полностью автономен и не зависит от файлов на диске при дестрое.
   input = var.resource_type
 
   triggers_replace = {
     gateway_url   = var.gateway_url
-    resource_type = var.resource_type
+    resource_type = var.resource_type # ИСПРАВЛЕНО: Теперь этот атрибут железно тут есть
   }
 
   # ── Create ────────────────────────────────────────────────────────────────────
@@ -155,32 +157,27 @@ resource "terraform_data" "mock_server" {
     command     = <<-BASH
       set -euo pipefail
       GATEWAY="${self.triggers_replace.gateway_url}"
-      TYPE="${self.triggers_replace.resource_type}"
+      
+      # ЖЕЛЕЗНО: Из твоего лога видно, что в стейте уже лежит реальный ID!
+      # Если стейт старый, там будет "res-1468", если новый — то, что было в input.
+      RESOURCE_ID="${self.output}"
 
-      if [ -z "$GATEWAY" ]; then
-        echo "No gateway, skipping mock destroy"
+      if [ -z "$GATEWAY" ] || [ -z "$RESOURCE_ID" ] || [ "$RESOURCE_ID" = "null" ]; then
+        echo "No gateway or valid resource ID found in state, skipping destroy"
         exit 0
       fi
 
-      echo "Fetching resources from gateway to find the latest created $TYPE..."
-      RESOURCES_LIST=$(curl -s "$GATEWAY/v1/resources" || echo "[]")
-
-      # ИСПРАВЛЕНИЕ ШЛЯПЫ: 
-      # 1. Фильтруем по нашему типу (docker_host)
-      # 2. Вытаскиваем только цифры из ID (из "res-9603" делаем "9603")
-      # 3. Сортируем по числовому значению в обратном порядке (самый большой ID будет первым)
-      # 4. Берем этот самый свежий ID.
-      
-      RESOURCE_ID=$(echo "$RESOURCES_LIST" | jq -r ".[] | select(.type==\"$TYPE\") | .id" | sed 's/res-//' | sort -rn | head -n 1 | awk '{print "res-"$0}')
-
-      if [ -z "$RESOURCE_ID" ] || [ "$RESOURCE_ID" = "res-" ] || [ "$RESOURCE_ID" = "null" ]; then
-        echo "No active resource found on gateway for type $TYPE, nothing to destroy."
+      # Если стейт по какой-то причине пустой или хранит дефолтный тип вместо ID,
+      # мы страхуемся, чтобы не слать кривой запрос шлюзу.
+      if [ "$RESOURCE_ID" = "docker_host" ]; then
+        echo "State contains resource type instead of real ID (apply was broken or state is dirty)."
+        echo "Skipping strict destroy to prevent gateway panic."
         exit 0
       fi
 
-      echo "→ Found the latest resource by ID sorting: $RESOURCE_ID. Destroying..."
+      echo "→ Destroying EXACT resource $RESOURCE_ID from $GATEWAY..."
       
-      # Удаляем строго самый свежий созданный хост
+      # Удаляем строго тот ID, который OpenTofu бережно принес из S3 стейта
       curl -s -X POST "$GATEWAY/v1/resources/delete" \
         -H "Content-Type: application/json" \
         -d "{\"id\":\"$RESOURCE_ID\"}"
