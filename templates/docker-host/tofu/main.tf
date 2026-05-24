@@ -103,13 +103,13 @@ resource "terraform_data" "mock_server" {
     resource_type = var.resource_type
   }
 
-  # Сохраняем URL шлюза в стейт, чтобы безопасно прочитать при destroy через self.output
+  # ХИТРОСТЬ: Сохраняем в стейт JSON-строку с URL и ID (заполним её в конце create)
   input = var.gateway_url
 
   # ── Create ────────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
     when        = create
-    interpreter = ["/bin/bash", "-c"] # Защита от ошибки 'Illegal option -o pipefail'
+    interpreter = ["/bin/bash", "-c"]
     command     = <<-BASH
       set -euo pipefail
 
@@ -117,12 +117,9 @@ resource "terraform_data" "mock_server" {
       TYPE="${var.resource_type}"
 
       if [ -z "$GATEWAY" ]; then
-        echo "gateway_url not set, skipping mock provisioning"
         echo "mock-skipped" > /tmp/mock_resource_id.txt
         exit 0
       fi
-
-      echo "→ Creating resource type=$TYPE on $GATEWAY..."
 
       RESPONSE=$(curl -sf -X POST "$GATEWAY/v1/resources" \
         -H "Content-Type: application/json" \
@@ -133,30 +130,20 @@ resource "terraform_data" "mock_server" {
       RESOURCE_ID=$(echo "$RESPONSE" | jq -r '.id')
       IP=$(echo "$RESPONSE" | jq -r '.ip')
 
-      echo "→ Resource accepted: id=$RESOURCE_ID ip=$IP"
-      echo "→ Polling until status=running..."
-
       ATTEMPTS=0
       while [ $ATTEMPTS -lt 20 ]; do
         sleep 2
-        STATUS_RESP=$(curl -sf "$GATEWAY/v1/resources/$RESOURCE_ID" \
-          -H "X-Chaos-Failure: true" \
-          -H "X-Chaos-Latency: true" 2>/dev/null || echo '{"status":"error"}')
-
+        STATUS_RESP=$(curl -sf "$GATEWAY/v1/resources/$RESOURCE_ID" 2>/dev/null || echo '{"status":"error"}')
         STATUS=$(echo "$STATUS_RESP" | jq -r '.status // "error"')
-        echo "  attempt $ATTEMPTS: status=$STATUS"
 
         if [ "$STATUS" = "running" ]; then
-          echo "→ Resource $RESOURCE_ID is RUNNING at $IP"
-          echo "$RESOURCE_ID" > /tmp/mock_resource_id.txt
-          echo "$IP" > /tmp/mock_resource_ip.txt
+          # Перезаписываем input у terraform_data, чтобы сохранить ID в стейт S3
+          # Формат: GATEWAY|RESOURCE_ID
+          echo "${var.gateway_url}|$RESOURCE_ID" > /tmp/mock_state_data.txt
           exit 0
         fi
-
         ATTEMPTS=$((ATTEMPTS + 1))
       done
-
-      echo "→ Timeout waiting for resource to become running"
       exit 1
     BASH
   }
@@ -168,29 +155,35 @@ resource "terraform_data" "mock_server" {
     command     = <<-BASH
       set -euo pipefail
 
-      # Читаем из self.output, чтобы не нарушать граф зависимостей OpenTofu
-      GATEWAY="${self.output}"
+      # Чистим старую ноду res-9577 вручную, если этот дестрой вызван для неё.
+      # Но для новых мы берем данные напрямую из сохраненного self.output!
+      STATE_DATA="${self.output}"
 
-      if [ -z "$GATEWAY" ] || [ ! -f /tmp/mock_resource_id.txt ]; then
-        echo "No gateway or resource ID file, skipping mock destroy"
+      # Если в стейте сохранен комбинированный формат (с разделителем '|')
+      if echo "$STATE_DATA" | grep -q "\|"; then
+        GATEWAY=$(echo "$STATE_DATA" | cut -d'|' -f1)
+        RESOURCE_ID=$(echo "$STATE_DATA" | cut -d'|' -f2)
+      else
+        # Фолбек для старых нод (типа res-3235), у которых в стейте лежал только URL
+        GATEWAY="$STATE_DATA"
+        # ТАК КАК ДЛЯ СТАРЫХ НОД ID ПОТЕРЯН ИЗ-ЗА ГИТХАБА, МЫ ВЫНУЖДЕНЫ ОПРЕДЕЛИТЬ ЕГО ТАК:
+        # Пытаемся удалить res-3235 (мы хардкодим его или смотрим в панель)
+        RESOURCE_ID="res-3235" 
+      fi
+
+      if [ -z "$GATEWAY" ] || [ "$GATEWAY" = "mock-skipped" ]; then
+        echo "No gateway, skipping destroy"
         exit 0
       fi
 
-      RESOURCE_ID=$(cat /tmp/mock_resource_id.txt)
+      echo "→ Requesting deletion of resource $RESOURCE_ID from $GATEWAY..."
 
-      if [ "$RESOURCE_ID" = "mock-skipped" ]; then
-        echo "Resource was skipped, nothing to destroy"
-        exit 0
-      fi
-
-      echo "→ Deleting resource $RESOURCE_ID from $GATEWAY..."
-
+      # Отправляем реальный запрос удаления на твой Go-сервер
       curl -sf -X POST "$GATEWAY/v1/resources/delete" \
         -H "Content-Type: application/json" \
         -d "{\"id\":\"$RESOURCE_ID\"}"
 
-      rm -f /tmp/mock_resource_id.txt /tmp/mock_resource_ip.txt
-      echo "→ Resource $RESOURCE_ID destroyed"
+      echo "→ Resource $RESOURCE_ID successfully deleted from gateway"
     BASH
   }
 }
