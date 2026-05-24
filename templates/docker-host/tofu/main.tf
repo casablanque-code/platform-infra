@@ -11,7 +11,6 @@ terraform {
 variable "gateway_url" {
   type        = string
   description = "URL of the infra-mock-gateway (e.g. http://host:8080)"
-  # ХАРДКОД: Платформа не пробрасывает переменные, фиксируем адрес твоего шлюза
   default     = "http://212.227.251.37:8080"
 }
 
@@ -20,19 +19,66 @@ variable "resource_type" {
   default = "docker_host"
 }
 
-# Standard provider vars
-variable "region"        { type = string; default = "" }
-variable "shape"         { type = string; default = "" }
-variable "location"      { type = string; default = "" }
-variable "server_type"   { type = string; default = "" }
-variable "instance_type" { type = string; default = "" }
-variable "vm_size"       { type = string; default = "" }
-variable "machine_type"  { type = string; default = "" }
-variable "platform_id"   { type = string; default = "" }
-variable "cores"         { type = number; default = 2 }
-variable "memory"        { type = number; default = 2 }
-variable "static_ip"     { type = string; default = "" }
-variable "ssh_user"      { type = string; default = "root" }
+# Standard provider vars (Полностью очищены от точек с запятой)
+variable "region" {
+  type    = string
+  default = ""
+}
+
+variable "shape" {
+  type    = string
+  default = ""
+}
+
+variable "location" {
+  type    = string
+  default = ""
+}
+
+variable "server_type" {
+  type    = string
+  default = ""
+}
+
+variable "instance_type" {
+  type    = string
+  default = ""
+}
+
+variable "vm_size" {
+  type    = string
+  default = ""
+}
+
+variable "machine_type" {
+  type    = string
+  default = ""
+}
+
+variable "platform_id" {
+  type    = string
+  default = ""
+}
+
+variable "cores" {
+  type    = number
+  default = 2
+}
+
+variable "memory" {
+  type    = number
+  default = 2
+}
+
+variable "static_ip" {
+  type    = string
+  default = ""
+}
+
+variable "ssh_user" {
+  type    = string
+  default = "root"
+}
 
 # ── Per-environment SSH key ────────────────────────────────────────────────────
 
@@ -57,13 +103,14 @@ resource "terraform_data" "mock_server" {
     resource_type = var.resource_type
   }
 
+  # Сохраняем URL шлюза в стейт, чтобы безопасно прочитать при destroy через self.output
   input = var.gateway_url
 
   # ── Create ────────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
-    when       = create
-    interpreter = ["/bin/bash", "-c"] # Фикс для GitHub Actions раннера
-    command    = <<-BASH
+    when        = create
+    interpreter = ["/bin/bash", "-c"] # Защита от ошибки 'Illegal option -o pipefail'
+    command     = <<-BASH
       set -euo pipefail
 
       GATEWAY="${var.gateway_url}"
@@ -116,11 +163,12 @@ resource "terraform_data" "mock_server" {
 
   # ── Destroy ───────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
-    when    = destroy
+    when        = destroy
     interpreter = ["/bin/bash", "-c"]
-    command = <<-BASH
+    command     = <<-BASH
       set -euo pipefail
 
+      # Читаем из self.output, чтобы не нарушать граф зависимостей OpenTofu
       GATEWAY="${self.output}"
 
       if [ -z "$GATEWAY" ] || [ ! -f /tmp/mock_resource_id.txt ]; then
@@ -156,9 +204,7 @@ locals {
     var.shape, var.server_type, var.platform_id, "mock"
   )
   
-  # КЛЮЧЕВОЙ ФИКС ДЛЯ ПЛАТФОРМЫ:
-  # Если static_ip пустой, выдаем тестовый адрес 203.0.113.1. 
-  # Шаг "Capture outputs" в provision.yml увидит его, включит is_mock="true" и пропустит SSH!
+  # Отдаем тестовую подсеть платформы. Воркфлоу provision.yml увидит ее и включит is_mock=true
   public_ip = var.static_ip != "" ? var.static_ip : "203.0.113.1"
 }
 
@@ -189,7 +235,7 @@ output "ssh_port" {
 }
 
 output "ssh_public_key" {
-  # Если работаем в режиме имитации, отдаем пустую строку, чтобы не триггерить лишние скрипты
+  # Если работаем в mock-режиме, гасим вывод ключа, защищая шаги SSH
   value = var.static_ip != "" ? tls_private_key.env_key.public_key_openssh : ""
 }
 
