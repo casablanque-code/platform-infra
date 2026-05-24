@@ -99,8 +99,6 @@ resource "tls_private_key" "env_key" {
 }
 
 # ── Mock resource via gateway ──────────────────────────────────────────────────
-# environment_id and gateway_url stored in triggers_replace
-# so destroy provisioner can access them via self.triggers_replace
 
 resource "terraform_data" "mock_server" {
   triggers_replace = {
@@ -127,6 +125,7 @@ resource "terraform_data" "mock_server" {
 
       echo "Creating resource type=$TYPE env=$ENV_ID on $GATEWAY..."
 
+      # Первый запрос оставляем с -sf, так как если шлюз вообще недоступен, надо упасть сразу
       RESPONSE=$(curl -sf -X POST "$GATEWAY/v1/resources" \
         -H "Content-Type: application/json" \
         -H "X-Chaos-Failure: true" \
@@ -137,15 +136,18 @@ resource "terraform_data" "mock_server" {
       IP=$(echo "$RESPONSE" | jq -r '.ip')
 
       echo "Resource accepted: id=$RESOURCE_ID ip=$IP"
-      echo "Polling until running..."
+      echo "Polling until running (tolerating chaos failures)..."
 
       ATTEMPTS=0
-      while [ $ATTEMPTS -lt 20 ]; do
-        sleep 2
-        STATUS=$(curl -sf "$GATEWAY/v1/resources/$RESOURCE_ID" \
+      while [ $ATTEMPTS -lt 30 ]; do
+        sleep 3
+        
+        # ИСПРАВЛЕНИЕ: Убрали флаг -f. Если хаос-шлюз выплюнет 500 ошибку, curl выдаст пустой ответ,
+        # а jq запишет "error" в переменную STATUS. Пайплайн НЕ упадет, а пойдет на следующий круг.
+        STATUS=$(curl -s "$GATEWAY/v1/resources/$RESOURCE_ID" \
           -H "X-Chaos-Failure: true" \
           -H "X-Chaos-Latency: true" 2>/dev/null \
-          | jq -r '.status // "error"')
+          | jq -r '.status // "error"' || echo "error")
 
         echo "  attempt $ATTEMPTS: status=$STATUS"
 
@@ -179,8 +181,12 @@ resource "terraform_data" "mock_server" {
 
       echo "Deleting resources for env=$ENV_ID from $GATEWAY..."
 
-      curl -sf -X POST "$GATEWAY/v1/resources/delete" \
+      # ИСПРАВЛЕНИЕ: Убрали -f, чтобы искусственные сбои гейтвея на дестрое 
+      # не ломали очистку стейта в самом OpenTofu. Дестрой должен проходить гарантированно.
+      curl -s -X POST "$GATEWAY/v1/resources/delete" \
         -H "Content-Type: application/json" \
+        -H "X-Chaos-Failure: true" \
+        -H "X-Chaos-Latency: true" \
         -d "{\"environment_id\":\"$ENV_ID\"}"
 
       echo "Resources for $ENV_ID destroyed"
