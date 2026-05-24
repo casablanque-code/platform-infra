@@ -62,7 +62,9 @@ jobs:
       - name: Generate tfvars
         working-directory: ${{ steps.runtime.outputs.module_path }}
         run: |
-          jq '.runtime.tfvars' \
+          # Merge provider tfvars with dynamic environment_id
+          jq --arg env_id "${{ inputs.environment_id }}" \
+            '.runtime.tfvars + {environment_id: $env_id}' \
             "../../../providers/${{ inputs.provider }}/provider.json" \
             > terraform.tfvars.json
           cat terraform.tfvars.json

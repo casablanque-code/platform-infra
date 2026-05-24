@@ -60,7 +60,8 @@ jobs:
       - name: Generate tfvars
         working-directory: ${{ steps.runtime.outputs.module_path }}
         run: |
-          jq '.runtime.tfvars' \
+          jq --arg env_id "${{ inputs.environment_id }}" \
+            '.runtime.tfvars + {environment_id: $env_id}' \
             "../../../providers/${{ inputs.provider }}/provider.json" \
             > terraform.tfvars.json
 

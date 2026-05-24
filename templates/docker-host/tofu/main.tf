@@ -1,6 +1,13 @@
 terraform {
   required_version = ">= 1.6.0"
 
+  required_providers {
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
+  }
+
   backend "s3" {
     # Injected via -backend-config flags in GitHub Actions workflow
   }
@@ -10,8 +17,14 @@ terraform {
 
 variable "gateway_url" {
   type        = string
-  description = "URL of the infra-mock-gateway (e.g. http://host:8080)"
-  default     = "http://212.227.251.37:8080"
+  description = "URL of infra-mock-gateway (e.g. http://host:8080)"
+  default     = ""
+}
+
+variable "environment_id" {
+  type        = string
+  description = "Platform environment ID — used to tag and find gateway resources"
+  default     = ""
 }
 
 variable "resource_type" {
@@ -85,104 +98,90 @@ resource "tls_private_key" "env_key" {
   algorithm = "ED25519"
 }
 
-terraform {
-  required_providers {
-    tls = {
-      source  = "hashicorp/tls"
-      version = "~> 4.0"
-    }
-  }
-}
-
 # ── Mock resource via gateway ──────────────────────────────────────────────────
+# environment_id and gateway_url stored in triggers_replace
+# so destroy provisioner can access them via self.triggers_replace
 
 resource "terraform_data" "mock_server" {
-  # Сюда при создании запишется строка с типом. 
-  # Главное — этот блок теперь полностью автономен и не зависит от файлов на диске при дестрое.
-  input = var.resource_type
-
   triggers_replace = {
-    gateway_url   = var.gateway_url
-    resource_type = var.resource_type # ИСПРАВЛЕНО: Теперь этот атрибут железно тут есть
+    gateway_url    = var.gateway_url
+    environment_id = var.environment_id
+    resource_type  = var.resource_type
   }
 
   # ── Create ────────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
-    when        = create
-    interpreter = ["/bin/bash", "-c"]
-    command     = <<-BASH
+    when    = create
+    command = <<-BASH
       set -euo pipefail
-      GATEWAY="${self.triggers_replace.gateway_url}"
-      TYPE="${self.triggers_replace.resource_type}"
+
+      GATEWAY="${var.gateway_url}"
+      TYPE="${var.resource_type}"
+      ENV_ID="${var.environment_id}"
 
       if [ -z "$GATEWAY" ]; then
-        echo "gateway_url not set, skipping mock provisioning"
+        echo "gateway_url not set, skipping"
         exit 0
       fi
 
-      echo "→ Creating resource type=$TYPE on $GATEWAY..."
-      RESPONSE=$(curl -s -X POST "$GATEWAY/v1/resources" \
+      echo "Creating resource type=$TYPE env=$ENV_ID on $GATEWAY..."
+
+      RESPONSE=$(curl -sf -X POST "$GATEWAY/v1/resources" \
         -H "Content-Type: application/json" \
-        -d "{\"type\":\"$TYPE\"}")
+        -H "X-Chaos-Failure: true" \
+        -H "X-Chaos-Latency: true" \
+        -d "{\"type\":\"$TYPE\",\"environment_id\":\"$ENV_ID\"}")
 
-      RESOURCE_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
-      
-      if [ -z "$RESOURCE_ID" ] || [ "$RESOURCE_ID" = "null" ]; then
-        echo "Error: Gateway returned invalid response: $RESPONSE"
-        exit 1
-      fi
+      RESOURCE_ID=$(echo "$RESPONSE" | jq -r '.id')
+      IP=$(echo "$RESPONSE" | jq -r '.ip')
 
-      echo "Gateway allocated ID: $RESOURCE_ID"
+      echo "Resource accepted: id=$RESOURCE_ID ip=$IP"
+      echo "Polling until running..."
 
-      # Цикл ожидания статуса running
       ATTEMPTS=0
       while [ $ATTEMPTS -lt 20 ]; do
         sleep 2
-        STATUS=$(curl -s "$GATEWAY/v1/resources/$RESOURCE_ID" | jq -r '.status // "unknown"')
-        echo "Resource $RESOURCE_ID status: $STATUS"
+        STATUS=$(curl -sf "$GATEWAY/v1/resources/$RESOURCE_ID" \
+          -H "X-Chaos-Failure: true" \
+          -H "X-Chaos-Latency: true" 2>/dev/null \
+          | jq -r '.status // "error"')
+
+        echo "  attempt $ATTEMPTS: status=$STATUS"
+
         if [ "$STATUS" = "running" ]; then
-          break
+          echo "Resource $RESOURCE_ID RUNNING at $IP"
+          exit 0
         fi
+
         ATTEMPTS=$((ATTEMPTS + 1))
       done
 
-      echo "→ Resource $RESOURCE_ID is running"
+      echo "Timeout waiting for resource"
+      exit 1
     BASH
   }
 
   # ── Destroy ───────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
-    when        = destroy
-    interpreter = ["/bin/bash", "-c"]
-    command     = <<-BASH
+    when    = destroy
+    command = <<-BASH
       set -euo pipefail
-      GATEWAY="${self.triggers_replace.gateway_url}"
-      
-      # ЖЕЛЕЗНО: Из твоего лога видно, что в стейте уже лежит реальный ID!
-      # Если стейт старый, там будет "res-1468", если новый — то, что было в input.
-      RESOURCE_ID="${self.output}"
 
-      if [ -z "$GATEWAY" ] || [ -z "$RESOURCE_ID" ] || [ "$RESOURCE_ID" = "null" ]; then
-        echo "No gateway or valid resource ID found in state, skipping destroy"
+      GATEWAY="${self.triggers_replace["gateway_url"]}"
+      ENV_ID="${self.triggers_replace["environment_id"]}"
+
+      if [ -z "$GATEWAY" ]; then
+        echo "No gateway_url, skipping"
         exit 0
       fi
 
-      # Если стейт по какой-то причине пустой или хранит дефолтный тип вместо ID,
-      # мы страхуемся, чтобы не слать кривой запрос шлюзу.
-      if [ "$RESOURCE_ID" = "docker_host" ]; then
-        echo "State contains resource type instead of real ID (apply was broken or state is dirty)."
-        echo "Skipping strict destroy to prevent gateway panic."
-        exit 0
-      fi
+      echo "Deleting resources for env=$ENV_ID from $GATEWAY..."
 
-      echo "→ Destroying EXACT resource $RESOURCE_ID from $GATEWAY..."
-      
-      # Удаляем строго тот ID, который OpenTofu бережно принес из S3 стейта
-      curl -s -X POST "$GATEWAY/v1/resources/delete" \
+      curl -sf -X POST "$GATEWAY/v1/resources/delete" \
         -H "Content-Type: application/json" \
-        -d "{\"id\":\"$RESOURCE_ID\"}"
+        -d "{\"environment_id\":\"$ENV_ID\"}"
 
-      echo "→ Resource $RESOURCE_ID successfully destroyed"
+      echo "Resources for $ENV_ID destroyed"
     BASH
   }
 }
@@ -191,12 +190,16 @@ resource "terraform_data" "mock_server" {
 
 locals {
   resolved_region = coalesce(var.region, var.location, "mock")
-  resolved_size   = coalesce(
-    var.instance_type, var.vm_size, var.machine_type,
-    var.shape, var.server_type, var.platform_id, "mock"
+  resolved_size = coalesce(
+    var.instance_type,
+    var.vm_size,
+    var.machine_type,
+    var.shape,
+    var.server_type,
+    var.platform_id,
+    "mock"
   )
-  
-  public_ip = var.static_ip != "" ? var.static_ip : "203.0.113.1"
+  public_ip = var.static_ip != "" ? var.static_ip : "203.0.113.10"
 }
 
 # ── Outputs ───────────────────────────────────────────────────────────────────
@@ -226,14 +229,10 @@ output "ssh_port" {
 }
 
 output "ssh_public_key" {
-  value = var.static_ip != "" ? tls_private_key.env_key.public_key_openssh : ""
+  value = tls_private_key.env_key.public_key_openssh
 }
 
 output "ssh_private_key" {
   value     = tls_private_key.env_key.private_key_openssh
   sensitive = true
-}
-
-output "mock_resource_id" {
-  value = var.gateway_url != "" ? "see gateway dashboard" : "mock-skipped"
 }
