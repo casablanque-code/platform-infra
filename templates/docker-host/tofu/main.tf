@@ -98,9 +98,6 @@ terraform {
 # ── Mock resource via gateway ──────────────────────────────────────────────────
 
 resource "terraform_data" "mock_server" {
-  # Генерируем уникальный токен для этой операции. 
-  # Он запишется в стейт при создании (create) и гарантированно 
-  # будет доступен при удалении (destroy) на любом раннере.
   input = uuid()
 
   triggers_replace = {
@@ -110,38 +107,55 @@ resource "terraform_data" "mock_server" {
 
   # ── Create ────────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
-    when    = create
-    command = <<-BASH
+    when        = create
+    interpreter = ["/bin/bash", "-c"] # ИСПРАВЛЕНИЕ: принудительно запускаем через BASH
+    command     = <<-BASH
       set -euo pipefail
       GATEWAY="${self.triggers_replace.gateway_url}"
       TYPE="${self.triggers_replace.resource_type}"
-      LOCK_ID="${self.output}" # Уникальный UUID из стейта
+      LOCK_ID="${self.output}"
 
       if [ -z "$GATEWAY" ]; then
         echo "gateway_url not set, skipping mock provisioning"
         exit 0
       fi
 
-      echo "→ Creating resource type=$TYPE on $GATEWAY..."
-      
-      # Передаем наш LOCK_ID в метаданные или теги шлюза, 
-      # чтобы при дестрое мы могли найти именно этот ресурс res-XXXX.
+      echo "→ Sending creation request to $GATEWAY with token $LOCK_ID..."
       RESPONSE=$(curl -sf -X POST "$GATEWAY/v1/resources" \
         -H "Content-Type: application/json" \
         -d "{\"type\":\"$TYPE\", \"client_token\":\"$LOCK_ID\"}")
 
       RESOURCE_ID=$(echo "$RESPONSE" | jq -r '.id')
-      echo "Created resource ID: $RESOURCE_ID with token: $LOCK_ID"
+      echo "Created pending resource ID: $RESOURCE_ID"
+
+      # Возвращаем проверку статуса, так как шлюз может имитировать долгую загрузку
+      ATTEMPTS=0
+      while [ $ATTEMPTS -lt 20 ]; do
+        sleep 2
+        STATUS_RESP=$(curl -sf "$GATEWAY/v1/resources/$RESOURCE_ID" 2>/dev/null || echo '{"status":"error"}')
+        STATUS=$(echo "$STATUS_RESP" | jq -r '.status // "error"')
+
+        echo "Waiting for resource $RESOURCE_ID... current status: $STATUS"
+        if [ "$STATUS" = "running" ]; then
+          echo "Resource is running!"
+          exit 0
+        fi
+        ATTEMPTS=$((ATTEMPTS + 1))
+      done
+
+      echo "Timeout waiting for resource to become running"
+      exit 1
     BASH
   }
 
   # ── Destroy ───────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
-    when    = destroy
-    command = <<-BASH
+    when        = destroy
+    interpreter = ["/bin/bash", "-c"] # ИСПРАВЛЕНИЕ: принудительно запускаем через BASH
+    command     = <<-BASH
       set -euo pipefail
       GATEWAY="${self.triggers_replace.gateway_url}"
-      LOCK_ID="${self.output}" # UUID успешно прочитается из удаленного S3 стейта!
+      LOCK_ID="${self.output}"
 
       if [ -z "$GATEWAY" ]; then
         echo "No gateway, skipping mock destroy"
@@ -150,14 +164,11 @@ resource "terraform_data" "mock_server" {
 
       echo "→ Destroying resource associated with token $LOCK_ID from $GATEWAY..."
       
-      # ИСПРАВЛЕНИЕ: Вместо удаления по "res-9603" из файла /tmp, 
-      # отправляем запрос на удаление по нашему уникальному токену, 
-      # который мы зафиксировали в стейте.
-      
+      # Отправляем запрос на удаление по токену, который сохранен в стейте S3
       curl -sf -X POST "$GATEWAY/v1/resources/delete_by_token" \
         -H "Content-Type: application/json" \
         -d "{\"client_token\":\"$LOCK_ID\"}"
-     BASH
+    BASH
   }
 }
 
