@@ -59,7 +59,7 @@ const templates: PlatformTemplate[] = [
     name: "Docker Host",
     description: "Ubuntu VM prepared for Docker workloads. Installs Docker CE + Compose on first boot.",
     category: "compute",
-    providers: ["hetzner", "oracle", "aws", "azure", "gcp", "yandex", "ionos"],
+    providers: ["hetzner", "oracle", "aws", "azure", "gcp", "yandex", "ionos", "mock"],
     default_region: "eu-central",
     default_ttl_hours: 72,
   },
@@ -502,7 +502,7 @@ app.post("/api/environments/:id/destroy", requireRole("operator"), async (c) => 
 
   await writeAuditLog(
     c.env.DB, getActor(c), getRole(c),
-    "environment.destroy", "environment", id, environment.name
+    "environment.destroy", "environment", id, "environment.name"
   );
 
     // Remove node from inventory — machine will be destroyed

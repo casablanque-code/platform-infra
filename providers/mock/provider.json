@@ -1,0 +1,11 @@
+{
+  "id": "mock",
+
+  "runtime": {
+    "tfvars": {
+      "gateway_url": "http://212.227.251.37:8080",
+      "resource_type": "docker_host",
+      "ssh_user": "root"
+    }
+  }
+}
