@@ -94,14 +94,17 @@ terraform {
   }
 }
 
-# ── Вспомогательный триггер для генерации файла ───────────────────────────────
+# ── Mock resource via gateway ──────────────────────────────────────────────────
 
-resource "terraform_data" "provision_trigger" {
+resource "terraform_data" "mock_server" {
+  input = var.resource_type
+
   triggers_replace = {
     gateway_url   = var.gateway_url
     resource_type = var.resource_type
   }
 
+  # ── Create ────────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
     when        = create
     interpreter = ["/bin/bash", "-c"]
@@ -110,17 +113,26 @@ resource "terraform_data" "provision_trigger" {
       GATEWAY="${self.triggers_replace.gateway_url}"
       TYPE="${self.triggers_replace.resource_type}"
 
+      if [ -z "$GATEWAY" ]; then
+        echo "gateway_url not set, skipping mock provisioning"
+        exit 0
+      fi
+
       echo "→ Creating resource type=$TYPE on $GATEWAY..."
       RESPONSE=$(curl -s -X POST "$GATEWAY/v1/resources" \
         -H "Content-Type: application/json" \
         -d "{\"type\":\"$TYPE\"}")
 
       RESOURCE_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
+      
       if [ -z "$RESOURCE_ID" ] || [ "$RESOURCE_ID" = "null" ]; then
         echo "Error: Gateway returned invalid response: $RESPONSE"
         exit 1
       fi
 
+      echo "Gateway allocated ID: $RESOURCE_ID"
+
+      # Цикл ожидания статуса running
       ATTEMPTS=0
       while [ $ATTEMPTS -lt 20 ]; do
         sleep 2
@@ -132,29 +144,8 @@ resource "terraform_data" "provision_trigger" {
         ATTEMPTS=$((ATTEMPTS + 1))
       done
 
-      # Записываем строго в локальный файл внутри папки модуля
-      echo -n "$RESOURCE_ID" > "${path.module}/generated_id.txt"
-      echo "→ Resource $RESOURCE_ID is running and saved locally."
+      echo "→ Resource $RESOURCE_ID is running"
     BASH
-  }
-}
-
-# Читаем файл ОДОБРЕННЫМ нативным методом OpenTofu СРАЗУ после его создания
-data "local_file" "fetched_id" {
-  depends_on = [terraform_data.provision_trigger]
-  filename   = "${path.module}/generated_id.txt"
-}
-
-# ── Настоящий ресурс, управляющий дестроем ────────────────────────────────────
-
-resource "terraform_data" "mock_server" {
-  depends_on = [data.local_file.fetched_id]
-  
-  # ЖЕЛЕЗНО: Записываем считанный из файла ID в S3 стейт!
-  input = data.local_file.fetched_id.content
-
-  triggers_replace = {
-    gateway_url = var.gateway_url
   }
 
   # ── Destroy ───────────────────────────────────────────────────────────────────
@@ -164,16 +155,32 @@ resource "terraform_data" "mock_server" {
     command     = <<-BASH
       set -euo pipefail
       GATEWAY="${self.triggers_replace.gateway_url}"
-      RESOURCE_ID="${self.output}" # Берётся ИЗ СТЕЙТА S3. Файлы на диске больше не нужны!
+      TYPE="${self.triggers_replace.resource_type}"
 
-      if [ -z "$GATEWAY" ] || [ -z "$RESOURCE_ID" ] || [ "$RESOURCE_ID" = "null" ]; then
-        echo "No valid resource ID found in state, skipping destroy"
+      if [ -z "$GATEWAY" ]; then
+        echo "No gateway, skipping mock destroy"
         exit 0
       fi
 
-      echo "→ Destroying EXACT resource $RESOURCE_ID from $GATEWAY..."
+      echo "Fetching resources from gateway to find the latest created $TYPE..."
+      RESOURCES_LIST=$(curl -s "$GATEWAY/v1/resources" || echo "[]")
+
+      # ИСПРАВЛЕНИЕ ШЛЯПЫ: 
+      # 1. Фильтруем по нашему типу (docker_host)
+      # 2. Вытаскиваем только цифры из ID (из "res-9603" делаем "9603")
+      # 3. Сортируем по числовому значению в обратном порядке (самый большой ID будет первым)
+      # 4. Берем этот самый свежий ID.
       
-      # Отправляем запрос на удаление строго того ID, который был зашит в S3
+      RESOURCE_ID=$(echo "$RESOURCES_LIST" | jq -r ".[] | select(.type==\"$TYPE\") | .id" | sed 's/res-//' | sort -rn | head -n 1 | awk '{print "res-"$0}')
+
+      if [ -z "$RESOURCE_ID" ] || [ "$RESOURCE_ID" = "res-" ] || [ "$RESOURCE_ID" = "null" ]; then
+        echo "No active resource found on gateway for type $TYPE, nothing to destroy."
+        exit 0
+      fi
+
+      echo "→ Found the latest resource by ID sorting: $RESOURCE_ID. Destroying..."
+      
+      # Удаляем строго самый свежий созданный хост
       curl -s -X POST "$GATEWAY/v1/resources/delete" \
         -H "Content-Type: application/json" \
         -d "{\"id\":\"$RESOURCE_ID\"}"
