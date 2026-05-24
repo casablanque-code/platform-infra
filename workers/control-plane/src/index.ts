@@ -1288,6 +1288,11 @@ app.post("/api/deployments/:id/destroy-complete", async (c) => {
     "Infrastructure destroyed"
   );
 
+  // Remove node from inventory — machine is destroyed
+  await c.env.DB.prepare(
+    `DELETE FROM nodes WHERE environment_id = ?`
+  ).bind(envId).run();
+
   return c.json({
     ok: true,
     status: "destroyed",
