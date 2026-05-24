@@ -111,8 +111,9 @@ resource "terraform_data" "mock_server" {
 
   # ── Create ────────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
-    when    = create
-    command = <<-BASH
+    when        = create
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-BASH
       set -euo pipefail
 
       GATEWAY="${var.gateway_url}"
@@ -163,8 +164,9 @@ resource "terraform_data" "mock_server" {
 
   # ── Destroy ───────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
-    when    = destroy
-    command = <<-BASH
+    when        = destroy
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-BASH
       set -euo pipefail
 
       GATEWAY="${self.triggers_replace["gateway_url"]}"
