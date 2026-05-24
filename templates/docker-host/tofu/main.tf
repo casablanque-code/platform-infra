@@ -19,28 +19,66 @@ variable "resource_type" {
   default = "docker_host"
 }
 
-# Standard provider vars (Исправили синтаксис: убрали точки с запятой)
+# Standard provider vars — ИСПРАВЛЕНО: Полностью убрали точки с запятой из всех блоков
 variable "region" {
   type    = string
   default = ""
 }
+
 variable "shape" {
   type    = string
   default = ""
 }
+
 variable "location" {
   type    = string
   default = ""
 }
-variable "server_type"   { type = string; default = "" }
-variable "instance_type" { type = string; default = "" }
-variable "vm_size"       { type = string; default = "" }
-variable "machine_type"  { type = string; default = "" }
-variable "platform_id"   { type = string; default = "" }
-variable "cores"         { type = number; default = 2 }
-variable "memory"        { type = number; default = 2 }
-variable "static_ip"     { type = string; default = "" }
-variable "ssh_user"      { type = string; default = "root" }
+
+variable "server_type" {
+  type    = string
+  default = ""
+}
+
+variable "instance_type" {
+  type    = string
+  default = ""
+}
+
+variable "vm_size" {
+  type    = string
+  default = ""
+}
+
+variable "machine_type" {
+  type    = string
+  default = ""
+}
+
+variable "platform_id" {
+  type    = string
+  default = ""
+}
+
+variable "cores" {
+  type    = number
+  default = 2
+}
+
+variable "memory" {
+  type    = number
+  default = 2
+}
+
+variable "static_ip" {
+  type    = string
+  default = ""
+}
+
+variable "ssh_user" {
+  type    = string
+  default = "root"
+}
 
 # ── Per-environment SSH key ────────────────────────────────────────────────────
 
@@ -65,7 +103,7 @@ resource "terraform_data" "mock_server" {
     resource_type = var.resource_type
   }
 
-  # ХИТРОСТЬ ТУТ: Сохраняем URL шлюза в стейт ресурса, чтобы прочитать его при destroy через self.output
+  # Сохраняем URL шлюза в стейт ресурса, чтобы прочитать его при destroy через self.output
   input = var.gateway_url
 
   # ── Create ────────────────────────────────────────────────────────────────────
@@ -116,7 +154,7 @@ resource "terraform_data" "mock_server" {
         fi
 
         ATTEMPTS=$((ATTEMPTS + 1))
-      done
+	  done
 
       echo "→ Timeout waiting for resource to become running"
       exit 1
@@ -129,7 +167,7 @@ resource "terraform_data" "mock_server" {
     command = <<-BASH
       set -euo pipefail
 
-      # ТЕПЕРЬ ИСПОЛЬЗУЕМ self.output ВМЕСТО var.gateway_url
+      # Используем безопасный self.output вместо var.gateway_url
       GATEWAY="${self.output}"
 
       if [ -z "$GATEWAY" ] || [ ! -f /tmp/mock_resource_id.txt ]; then
