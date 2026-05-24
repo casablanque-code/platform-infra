@@ -109,6 +109,7 @@ resource "terraform_data" "mock_server" {
   # ── Create ────────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
     when       = create
+    interpreter = ["/bin/bash", "-c"]
     command    = <<-BASH
       set -euo pipefail
 
