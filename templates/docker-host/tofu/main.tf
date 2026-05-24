@@ -11,7 +11,8 @@ terraform {
 variable "gateway_url" {
   type        = string
   description = "URL of the infra-mock-gateway (e.g. http://host:8080)"
-  default     = ""
+  # ХАРДКОД: Платформа не пробрасывает переменные, фиксируем адрес твоего шлюза
+  default     = "http://212.227.251.37:8080"
 }
 
 variable "resource_type" {
@@ -19,66 +20,19 @@ variable "resource_type" {
   default = "docker_host"
 }
 
-# Standard provider vars — ИСПРАВЛЕНО: Полностью убрали точки с запятой из всех блоков
-variable "region" {
-  type    = string
-  default = ""
-}
-
-variable "shape" {
-  type    = string
-  default = ""
-}
-
-variable "location" {
-  type    = string
-  default = ""
-}
-
-variable "server_type" {
-  type    = string
-  default = ""
-}
-
-variable "instance_type" {
-  type    = string
-  default = ""
-}
-
-variable "vm_size" {
-  type    = string
-  default = ""
-}
-
-variable "machine_type" {
-  type    = string
-  default = ""
-}
-
-variable "platform_id" {
-  type    = string
-  default = ""
-}
-
-variable "cores" {
-  type    = number
-  default = 2
-}
-
-variable "memory" {
-  type    = number
-  default = 2
-}
-
-variable "static_ip" {
-  type    = string
-  default = ""
-}
-
-variable "ssh_user" {
-  type    = string
-  default = "root"
-}
+# Standard provider vars
+variable "region"        { type = string; default = "" }
+variable "shape"         { type = string; default = "" }
+variable "location"      { type = string; default = "" }
+variable "server_type"   { type = string; default = "" }
+variable "instance_type" { type = string; default = "" }
+variable "vm_size"       { type = string; default = "" }
+variable "machine_type"  { type = string; default = "" }
+variable "platform_id"   { type = string; default = "" }
+variable "cores"         { type = number; default = 2 }
+variable "memory"        { type = number; default = 2 }
+variable "static_ip"     { type = string; default = "" }
+variable "ssh_user"      { type = string; default = "root" }
 
 # ── Per-environment SSH key ────────────────────────────────────────────────────
 
@@ -103,13 +57,12 @@ resource "terraform_data" "mock_server" {
     resource_type = var.resource_type
   }
 
-  # Сохраняем URL шлюза в стейт ресурса, чтобы прочитать его при destroy через self.output
   input = var.gateway_url
 
   # ── Create ────────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
     when       = create
-    interpreter = ["/bin/bash", "-c"]
+    interpreter = ["/bin/bash", "-c"] # Фикс для GitHub Actions раннера
     command    = <<-BASH
       set -euo pipefail
 
@@ -148,14 +101,13 @@ resource "terraform_data" "mock_server" {
 
         if [ "$STATUS" = "running" ]; then
           echo "→ Resource $RESOURCE_ID is RUNNING at $IP"
-          # Store for destroy step
           echo "$RESOURCE_ID" > /tmp/mock_resource_id.txt
           echo "$IP" > /tmp/mock_resource_ip.txt
           exit 0
         fi
 
         ATTEMPTS=$((ATTEMPTS + 1))
-	  done
+      done
 
       echo "→ Timeout waiting for resource to become running"
       exit 1
@@ -165,10 +117,10 @@ resource "terraform_data" "mock_server" {
   # ── Destroy ───────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
     when    = destroy
+    interpreter = ["/bin/bash", "-c"]
     command = <<-BASH
       set -euo pipefail
 
-      # Используем безопасный self.output вместо var.gateway_url
       GATEWAY="${self.output}"
 
       if [ -z "$GATEWAY" ] || [ ! -f /tmp/mock_resource_id.txt ]; then
@@ -203,7 +155,11 @@ locals {
     var.instance_type, var.vm_size, var.machine_type,
     var.shape, var.server_type, var.platform_id, "mock"
   )
-  public_ip = var.static_ip != "" ? var.static_ip : "10.100.0.1"
+  
+  # КЛЮЧЕВОЙ ФИКС ДЛЯ ПЛАТФОРМЫ:
+  # Если static_ip пустой, выдаем тестовый адрес 203.0.113.1. 
+  # Шаг "Capture outputs" в provision.yml увидит его, включит is_mock="true" и пропустит SSH!
+  public_ip = var.static_ip != "" ? var.static_ip : "203.0.113.1"
 }
 
 # ── Outputs ───────────────────────────────────────────────────────────────────
@@ -233,7 +189,8 @@ output "ssh_port" {
 }
 
 output "ssh_public_key" {
-  value = tls_private_key.env_key.public_key_openssh
+  # Если работаем в режиме имитации, отдаем пустую строку, чтобы не триггерить лишние скрипты
+  value = var.static_ip != "" ? tls_private_key.env_key.public_key_openssh : ""
 }
 
 output "ssh_private_key" {
