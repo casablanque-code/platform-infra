@@ -19,10 +19,19 @@ variable "resource_type" {
   default = "docker_host"
 }
 
-# Standard provider vars (accepted but unused in mock mode)
-variable "region"        { type = string; default = "" }
-variable "shape"         { type = string; default = "" }
-variable "location"      { type = string; default = "" }
+# Standard provider vars (Исправили синтаксис: убрали точки с запятой)
+variable "region" {
+  type    = string
+  default = ""
+}
+variable "shape" {
+  type    = string
+  default = ""
+}
+variable "location" {
+  type    = string
+  default = ""
+}
 variable "server_type"   { type = string; default = "" }
 variable "instance_type" { type = string; default = "" }
 variable "vm_size"       { type = string; default = "" }
@@ -55,6 +64,9 @@ resource "terraform_data" "mock_server" {
     gateway_url   = var.gateway_url
     resource_type = var.resource_type
   }
+
+  # ХИТРОСТЬ ТУТ: Сохраняем URL шлюза в стейт ресурса, чтобы прочитать его при destroy через self.output
+  input = var.gateway_url
 
   # ── Create ────────────────────────────────────────────────────────────────────
   provisioner "local-exec" {
@@ -117,7 +129,8 @@ resource "terraform_data" "mock_server" {
     command = <<-BASH
       set -euo pipefail
 
-      GATEWAY="${var.gateway_url}"
+      # ТЕПЕРЬ ИСПОЛЬЗУЕМ self.output ВМЕСТО var.gateway_url
+      GATEWAY="${self.output}"
 
       if [ -z "$GATEWAY" ] || [ ! -f /tmp/mock_resource_id.txt ]; then
         echo "No gateway or resource ID file, skipping mock destroy"
@@ -151,9 +164,6 @@ locals {
     var.instance_type, var.vm_size, var.machine_type,
     var.shape, var.server_type, var.platform_id, "mock"
   )
-  # If static_ip set — use it. Otherwise use mock IP from gateway (via file).
-  # Note: In real runs the gateway IP is captured during provisioner execution.
-  # For outputs we use static_ip if provided, else fall back to mock address.
   public_ip = var.static_ip != "" ? var.static_ip : "10.100.0.1"
 }
 
