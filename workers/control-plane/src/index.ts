@@ -1670,11 +1670,6 @@ async function reconcileNodeHealth(env: Env) {
   };
 }
 
-app.notFound(async (c) => {
-  return c.env.ASSETS.fetch(c.req.raw);
-});
-
-// Add GET /api/environments/:id at top level
 app.get("/api/environments/:id", requireRole("viewer"), async (c) => {
   const { id } = c.req.param();
   const env = await c.env.DB.prepare(
@@ -1682,6 +1677,10 @@ app.get("/api/environments/:id", requireRole("viewer"), async (c) => {
   ).bind(id).first();
   if (!env) return c.json({ error: "not found" }, 404);
   return c.json(env);
+});
+
+app.notFound(async (c) => {
+  return c.env.ASSETS.fetch(c.req.raw);
 });
 
 export default {
