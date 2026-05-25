@@ -354,15 +354,6 @@ app.get("/api/environments/:id/outputs", async (c) => {
     }))
   );
 
-  app.get("/api/environments/:id", requireRole("viewer"), async (c) => {
-    const { id } = c.req.param();
-    const env = await c.env.DB.prepare(
-      `SELECT * FROM environments WHERE id = ?`
-    ).bind(id).first();
-    if (!env) return c.json({ error: "not found" }, 404);
-    return c.json(env);
-  });
-
   return c.json(decrypted);
 });
 
@@ -1381,9 +1372,6 @@ app.get("/api/audit", requireRole("admin"), async (c) => {
   return c.json(results);
 });
 
-app.notFound(async (c) => {
-  return c.env.ASSETS.fetch(c.req.raw);
-});
 
 // ── Node check-in ──────────────────────────────────────────────────────────────
 
@@ -1681,6 +1669,20 @@ async function reconcileNodeHealth(env: Env) {
     recovered: recovered.results.length,
   };
 }
+
+app.notFound(async (c) => {
+  return c.env.ASSETS.fetch(c.req.raw);
+});
+
+// Add GET /api/environments/:id at top level
+app.get("/api/environments/:id", requireRole("viewer"), async (c) => {
+  const { id } = c.req.param();
+  const env = await c.env.DB.prepare(
+    `SELECT * FROM environments WHERE id = ?`
+  ).bind(id).first();
+  if (!env) return c.json({ error: "not found" }, 404);
+  return c.json(env);
+});
 
 export default {
   fetch: app.fetch,
