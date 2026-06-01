@@ -2,7 +2,7 @@
 
 Self-hosted infrastructure platform for small engineering teams. Provision VMs, bootstrap services, track nodes, run actions — from a web UI. No tickets, no bottlenecks, no SaaS vendor.
 
-→ [Linding](https://platform-casablanque.com) · [Control plane dashboard](https://infra.casablanque.com)
+→ [Lianding](https://platform-casablanque.com) · [Control plane dashboard](https://infra.casablanque.com)
 
 ---
 
