@@ -1,20 +1,23 @@
 # platform-infra
 
-Self-hosted infrastructure platform for small engineering teams. Provision VMs, bootstrap services, track nodes, run actions — from a web UI. No tickets, no bottlenecks, no SaaS vendor.
+Self-hosted infrastructure platform for small engineering teams. Provision VMs, bootstrap services, track nodes, run runtime actions — from a web UI. No tickets, no bottlenecks, no SaaS vendor.
 
-→ [Landing](https://platform.casablanque.com) · [Control plane dashboard](https://infra.casablanque.com)
+→ [Landing](https://platform.casablanque.com) · [Dashboard](https://infra.casablanque.com)
 
 ---
 
 ## What it does
 
-- **Self-service provisioning** — web UI to create environments (Docker Host, PostgreSQL) on any supported cloud provider
-- **Multi-cloud** — Hetzner, Oracle, AWS, Azure, GCP, Yandex Cloud via provider abstraction
-- **Auto-lifecycle** — configurable TTL (1h–7d), automatic destroy on expiry, no zombie environments
-- **Post-provision bootstrap** — base hardening, Docker CE, service install via SSH scripts after every apply
-- **Node inventory** — nodes check in after bootstrap, control plane tracks health and last seen, flags unreachable
-- **Runtime actions** — reboot, redeploy, run playbooks (Portainer, Node Exporter, Uptime Kuma, pgAdmin, R2 backup) from the dashboard
-- **Deployment history** — full event log with retry count, duration, links to GitHub Actions runs
+- **Self-service provisioning** — web UI to create environments on any supported provider. No CLI, no YAML, no Terraform knowledge needed.
+- **Multi-cloud** — IONOS, Hetzner, Oracle, AWS, Azure, GCP, Yandex via provider abstraction. Switch provider with one click.
+- **Auto-lifecycle** — configurable TTL (1h / 6h / 24h / 72h / 7d / ∞), automatic destroy on expiry. No zombie environments.
+- **Post-provision bootstrap** — SSH scripts run after every apply: base hardening, Docker CE, service installs, node registration.
+- **Node inventory** — nodes check in after bootstrap and every 5 minutes. Control plane tracks health, IP, last seen. Self-cleaning: node removes itself when environment is destroyed.
+- **Runtime actions** — reboot, redeploy, run playbooks (Portainer, Node Exporter, Uptime Kuma, pgAdmin, R2 backup) directly from the dashboard.
+- **RBAC** — admin / operator / viewer roles. API keys with expiry. Audit log for all mutations.
+- **Encrypted outputs** — sensitive values (SSH private keys, DB passwords) encrypted with AES-GCM before storing in D1.
+- **Per-environment SSH keys** — unique ED25519 key generated per environment via OpenTofu `tls_private_key`. Shown in dashboard, never stored in plain text.
+- **Mock gateway** — local Go server that emulates a cloud provider API. Test full tofu cycle (create → polling → destroy) without real cloud credentials or costs.
 
 ---
 
@@ -24,23 +27,21 @@ Self-hosted infrastructure platform for small engineering teams. Provision VMs, 
 Browser (React dashboard)
     │
     ▼
-Cloudflare Workers (control plane)  ←─── cron scheduler (every minute)
-    │           │
-    │           ▼
-    │       Cloudflare D1 (SQLite)
-    │           │
-    ▼           ▼
-GitHub Actions (executor)
+Cloudflare Workers (control plane API)  ←── cron every minute
+    │                │
+    │                ▼
+    │           Cloudflare D1 (SQLite)
     │
-    ├── provision.yml  →  OpenTofu apply  →  bootstrap scripts  →  /complete
-    ├── destroy.yml    →  OpenTofu destroy  →  /destroy-complete
-    └── action.yml     →  SSH action (reboot / run_script / redeploy)
+    ▼
+GitHub Actions (executor)
+    ├── provision.yml  →  tofu apply  →  bootstrap via SSH  →  /complete
+    ├── destroy.yml    →  tofu destroy  →  /destroy-complete
+    └── action.yml     →  SSH runtime action (reboot / playbook / redeploy)
 
-State storage: Cloudflare R2 (S3-compatible OpenTofu backend)
+State: Cloudflare R2 (S3-compatible tofu backend, keyed by environment_id)
 ```
 
-**Why GitHub Actions as executor?**
-Free distributed runner, no agent infrastructure to maintain, native secrets management, full audit trail via Actions logs.
+**Why GitHub Actions as executor?** Free distributed runner, no agent to maintain, native secrets management, full audit trail.
 
 ---
 
@@ -54,18 +55,19 @@ Free distributed runner, no agent infrastructure to maintain, native secrets man
 | Frontend | React 19 + Tailwind 4 + Vite |
 | IaC | OpenTofu |
 | Executor | GitHub Actions |
-| Bootstrap | Bash scripts (idempotent) |
+| Bootstrap | Bash (idempotent scripts) |
 
 ---
 
-## Getting started
+## Quick start
 
 ### Prerequisites
 
-- Cloudflare account (Workers, D1, R2 — all on free tier)
+- Cloudflare account (Workers + D1 + R2 — all free tier)
 - GitHub account with Actions enabled
-- `wrangler` CLI installed (`npm i -g wrangler`)
-- `tofu` installed
+- `wrangler` CLI: `npm i -g wrangler && wrangler login`
+- `gh` CLI: https://cli.github.com → `gh auth login`
+- `yq`: `brew install yq` or `snap install yq`
 
 ### 1. Clone
 
@@ -74,63 +76,51 @@ git clone https://github.com/casablanque-code/platform-infra
 cd platform-infra
 ```
 
-### 2. Create D1 database
+### 2. Create Cloudflare resources
 
 ```bash
-wrangler d1 create platform-infra
-# Copy database_id to wrangler.jsonc
-wrangler d1 migrations apply platform-infra --remote
-```
+# D1 database
+wrangler d1 create platform_infra
+# → copy the database_id for the next step
 
-### 3. Create R2 bucket
-
-```bash
+# R2 bucket (for tofu state)
 wrangler r2 bucket create platform-infra-state
+# → create R2 API token: Cloudflare Dashboard → R2 → Manage API Tokens
 ```
 
-Get your R2 credentials: Cloudflare Dashboard → R2 → Manage API Tokens.
-
-### 4. Set Cloudflare Workers secrets
+### 3. Configure
 
 ```bash
-wrangler secret put GITHUB_TOKEN          # PAT with workflow scope
-wrangler secret put CALLBACK_TOKEN        # random string, e.g. openssl rand -hex 32
-wrangler secret put GITHUB_OWNER          # your GitHub username
-wrangler secret put GITHUB_REPO           # platform-infra
-wrangler secret put GITHUB_WORKFLOW       # provision.yml
-wrangler secret put GITHUB_DESTROY_WORKFLOW # destroy.yml
-wrangler secret put GITHUB_ACTION_WORKFLOW  # action.yml
-wrangler secret put GITHUB_REF            # main
+cp platform.config.example.yml platform.config.yml
+# Edit platform.config.yml — fill in all values
 ```
 
-### 5. Set GitHub Actions secrets
+Key fields:
+| Field | Where to find |
+|---|---|
+| `cloudflare.d1_database_id` | Output of `wrangler d1 create` |
+| `cloudflare.r2_*` | R2 → Manage API Tokens |
+| `github.token` | github.com/settings/tokens (scopes: repo, workflow) |
+| `secrets.*` | Generate with `openssl rand -hex 32` |
+| `bootstrap.ssh_private_key` | `ssh-keygen -t ed25519 -f ~/.ssh/platform_bootstrap -N ""` |
 
-```
-CONTROL_PLANE_URL     https://your-worker.workers.dev
-CALLBACK_TOKEN        same as above
-R2_ACCESS_KEY_ID      from Cloudflare R2 API token
-R2_SECRET_ACCESS_KEY  from Cloudflare R2 API token
-R2_BUCKET             platform-infra-state
-R2_ENDPOINT           https://<account_id>.r2.cloudflarestorage.com
-```
-
-For real bootstrap (SSH into actual VMs):
-```
-BOOTSTRAP_SSH_KEY     private key matching the public key deployed to VMs
-```
-
-### 6. Deploy
+### 4. Run setup
 
 ```bash
-# Deploy control plane
-cd workers/control-plane
-wrangler deploy
-
-# Deploy dashboard
-cd apps/dashboard
-npm run build
-wrangler pages deploy dist
+bash setup.sh
 ```
+
+This will:
+- Update `wrangler.jsonc` with your D1 database ID
+- Set all Cloudflare Workers secrets
+- Set all GitHub Actions secrets
+- Update `providers/*.json` with your provider config
+- Apply D1 migrations
+- Build and deploy the Worker
+
+### 5. Open the dashboard
+
+Go to `https://platform-control-plane.workers.dev` and sign in with your `admin_key`.
 
 ---
 
@@ -138,92 +128,143 @@ wrangler pages deploy dist
 
 ```
 platform-infra/
-├── workers/
-│   └── control-plane/
-│       ├── src/index.ts          # Hono API + scheduler
-│       └── migrations/           # D1 schema (0001–0009)
-├── apps/
-│   └── dashboard/
-│       └── src/App.tsx           # React SPA
+├── workers/control-plane/
+│   ├── src/index.ts          # Hono API + cron scheduler
+│   ├── migrations/           # D1 schema (0001–0011)
+│   └── wrangler.jsonc        # auto-updated by setup.sh
+├── apps/dashboard/
+│   └── src/App.tsx           # React SPA (served via Workers Assets)
 ├── templates/
 │   ├── docker-host/
-│   │   ├── template.json         # UI metadata
-│   │   ├── runtime.json          # executor config + post_provision + actions
-│   │   └── tofu/main.tf          # OpenTofu module (mock → replace with real)
+│   │   ├── template.json     # UI metadata (name, providers, TTL)
+│   │   ├── runtime.json      # executor config, post_provision, actions
+│   │   └── tofu/main.tf      # OpenTofu module
 │   └── postgres/
 │       └── ...
 ├── providers/
-│   ├── hetzner/provider.json     # tfvars per provider
-│   ├── oracle/provider.json
+│   ├── ionos/provider.json   # static IP (existing server)
+│   ├── mock/provider.json    # infra-mock-gateway
+│   ├── hetzner/provider.json # tfvars (real provider WIP)
 │   ├── aws/provider.json
 │   ├── azure/provider.json
 │   ├── gcp/provider.json
 │   └── yandex/provider.json
 ├── bootstrap/
-│   ├── base.sh                   # hardening + essentials
-│   ├── docker.sh                 # Docker CE install
-│   ├── checkin.sh                # node registration
+│   ├── base.sh               # hardening, fail2ban, ufw
+│   ├── docker.sh             # Docker CE + Compose
+│   ├── checkin.sh            # node registration + self-cleaning cron
 │   ├── install_portainer.sh
 │   ├── install_node_exporter.sh
 │   ├── install_uptime_kuma.sh
 │   ├── install_pgadmin.sh
 │   └── backup_to_r2.sh
+├── infra-mock-gateway/
+│   └── main.go               # mock cloud provider API (Go)
 ├── .github/workflows/
 │   ├── provision.yml
 │   ├── destroy.yml
 │   └── action.yml
-└── MOCK_REGISTRY.md              # all stubs + migration guide
+├── platform.config.example.yml  # copy → platform.config.yml
+├── setup.sh                      # onboarding script
+└── MOCK_REGISTRY.md              # mock stubs + real provider migration guide
 ```
 
 ---
 
-## Connecting a real cloud provider
-
-Currently all providers use mock outputs (IP `203.0.113.10`). To connect a real provider:
-
-1. Replace `templates/<template>/tofu/main.tf` with real provider resources
-2. Add provider credentials to GitHub Secrets (see `MOCK_REGISTRY.md` for exact secret names per provider)
-3. Add `BOOTSTRAP_SSH_KEY` secret — private key matching the public key deployed to VMs
-4. Create environment from UI — full cycle runs including bootstrap and node check-in
-
-See [`MOCK_REGISTRY.md`](./MOCK_REGISTRY.md) for the complete migration checklist.
-
----
-
-## Dashboard
+## Dashboard tabs
 
 | Tab | What's there |
 |---|---|
-| Dashboard | Env / deployment / node health counters, provider status, recent activity |
-| Environments | List with filters, TTL bar, node health inline, outputs, runtime actions |
-| Deployments | Job history with event timeline, retry count, delete |
-| Nodes | Registered nodes with last seen, delete |
-| Create | Template picker, provider selector, TTL picker, template-specific inputs |
+| Dashboard | Env / deployment / node counters (separate sections), provider grid, recent activity |
+| Environments | Filters, TTL progress bar, node health inline, outputs (decrypted), runtime actions with playbook picker |
+| Deployments | Event timeline per job, retry count, delete |
+| Nodes | Inventory with last seen, delete |
+| Create | Template picker, provider buttons, TTL selector, template inputs |
+| Keys | API key management — admin only |
+| Audit | Mutation log — admin only |
+
+---
+
+## RBAC
+
+| Role | Can do |
+|---|---|
+| `admin` | Everything + manage API keys + view audit log |
+| `operator` | Create/destroy environments, run actions, delete deployments/nodes |
+| `viewer` | Read-only access to all resources |
+
+Admin key is set via `wrangler secret put ADMIN_KEY` (or `setup.sh`).
+Operator/viewer keys are created in the dashboard → Keys tab.
 
 ---
 
 ## Environment lifecycle
 
 ```
-queued → dispatching → [github_actions_started → runtime_resolved →
-         outputs_captured → bootstrap_skipped/bootstrap_complete] → success
+queued
+  → dispatching
+    → github_actions_started
+    → runtime_resolved
+    → outputs_captured
+    → bootstrap_skipped (mock) | bootstrap_complete (real)
+  → success (running)
 
-success → destroy_queued → dispatching → destroyed
+running → destroy_queued → dispatching → destroyed
 ```
 
-Failed deployments retry with exponential backoff. Stuck deployments (dispatching > 10 min) are recovered by cron. TTL expiry triggers automatic destroy.
+- Failed deployments retry with exponential backoff
+- Stuck deployments (dispatching > 10 min) auto-recovered by cron
+- TTL expiry triggers automatic destroy + node cleanup
+- Node self-removes from inventory when environment is destroyed
+
+---
+
+## Mock gateway (for testing)
+
+Test the full tofu cycle without real cloud credentials:
+
+```bash
+# On any Linux server (e.g. your IONOS VPS)
+cd infra-mock-gateway
+go run main.go
+# → http://YOUR_IP:8080/dashboard
+
+# Open port 8080
+sudo ufw allow 8080/tcp
+```
+
+Set in `platform.config.yml`:
+```yaml
+providers:
+  mock:
+    enabled: true
+    gateway_url: "http://YOUR_IP:8080"
+```
+
+See [MOCK_REGISTRY.md](./MOCK_REGISTRY.md) for full details.
+
+---
+
+## Connecting a real provider
+
+All providers currently use static IP (IONOS) or mock (gateway). To add a real cloud provider:
+
+1. Write a proper `templates/<template>/tofu/main.tf` with provider resources
+2. Add provider credentials to GitHub Secrets
+3. Add `BOOTSTRAP_SSH_KEY` — private key deployed to VMs via cloud-init
+
+See [MOCK_REGISTRY.md](./MOCK_REGISTRY.md) for per-provider secrets and migration checklist.
 
 ---
 
 ## Roadmap
 
-- [ ] Zero Trust access (identity-aware proxy, JWT auth, no open ports)
-- [ ] OPA governance (cost limits, security rules before apply)
-- [ ] Multi-user + RBAC + API keys
-- [ ] Audit log (events already structured, write path pending)
-- [ ] Real provider modules (Hetzner, Oracle free tier first)
-- [ ] Secrets management (encrypted per-environment secrets in D1)
-- [ ] Template catalog expansion (K3s, WireGuard, n8n, Redis)
+- [ ] Real provider modules — Hetzner first (cx22, ~€3/mo)
+- [ ] Zero Trust access — Tailscale mesh, no open ports
+- [ ] OPA governance — pre-apply cost/security policies
+- [ ] Template catalog — K3s, WireGuard, Redis, n8n
+- [ ] Secrets management — per-environment encrypted secrets
+- [ ] Multi-tenancy — project isolation, team RBAC
 
 ---
 
