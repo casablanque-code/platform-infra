@@ -185,8 +185,6 @@ resource "terraform_data" "mock_server" {
       # не ломали очистку стейта в самом OpenTofu. Дестрой должен проходить гарантированно.
       curl -s -X POST "$GATEWAY/v1/resources/delete" \
         -H "Content-Type: application/json" \
-        -H "X-Chaos-Failure: true" \
-        -H "X-Chaos-Latency: true" \
         -d "{\"environment_id\":\"$ENV_ID\"}"
 
       echo "Resources for $ENV_ID destroyed"
