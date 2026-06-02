@@ -28,6 +28,7 @@ sudo ufw --force reset
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
 sudo ufw allow 22/tcp comment 'SSH'
+sudo ufw allow 8080/tcp comment 'mock-gateway'
 sudo ufw --force enable
 
 # ── fail2ban ───────────────────────────────────────────────────────────────────
