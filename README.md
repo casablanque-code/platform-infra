@@ -65,7 +65,7 @@ State: Cloudflare R2 (S3-compatible tofu backend, keyed by environment_id)
 
 - Cloudflare account (Workers + D1 + R2 — all free tier)
 - GitHub account with Actions enabled
-- `wrangler` CLI: `npm i -g wrangler && wrangler login`
+- `wrangler` CLI: `npx i -g wrangler && wrangler login`
 - `gh` CLI: https://cli.github.com → `gh auth login`
 - `yq`: `brew install yq` or `snap install yq`
 
@@ -80,11 +80,11 @@ cd platform-infra
 
 ```bash
 # D1 database
-wrangler d1 create platform_infra
+npx wrangler d1 create platform_infra
 # → copy the database_id for the next step
 
 # R2 bucket (for tofu state)
-wrangler r2 bucket create platform-infra-state
+npx wrangler r2 bucket create platform-infra-state
 # → create R2 API token: Cloudflare Dashboard → R2 → Manage API Tokens
 ```
 

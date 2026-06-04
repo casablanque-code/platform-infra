@@ -1,173 +1,198 @@
 # Mock Registry
 
-Все заглушки в проекте. При подключении реального провайдера — заменяешь соответствующий раздел.
+Все заглушки в проекте и статус реальных подключений. При подключении реального провайдера — следуй соответствующему разделу.
 
 ---
 
-## 1. Tofu — mock outputs вместо реальных ресурсов
+## Текущий статус провайдеров
 
-**Файлы:**
-- `templates/docker-host/tofu/main.tf`
-- `templates/postgres/tofu/main.tf`
+| Провайдер | Tofu module | Реальный API | Bootstrap | Checkin |
+|---|---|---|---|---|
+| **ionos** | ✅ static IP | ✅ existing server | ✅ работает | ✅ работает |
+| **mock** | ✅ gateway | ✅ infra-mock-gateway | ⏭ skipped | ⏭ skipped |
+| hetzner | ⚠️ mock outputs | ❌ | ⏭ skipped | ⏭ skipped |
+| oracle | ⚠️ mock outputs | ❌ | ⏭ skipped | ⏭ skipped |
+| aws | ⚠️ mock outputs | ❌ | ⏭ skipped | ⏭ skipped |
+| azure | ⚠️ mock outputs | ❌ | ⏭ skipped | ⏭ skipped |
+| gcp | ⚠️ mock outputs | ❌ | ⏭ skipped | ⏭ skipped |
+| yandex | ⚠️ mock outputs | ❌ | ⏭ skipped | ⏭ skipped |
 
-**Что заглушено:**
-```hcl
-output "public_ip" {
-  value = "203.0.113.10"   # ← документация RFC 5737, не маршрутизируется
-}
-output "private_ip" {
-  value = "10.0.0.10"
-}
+---
+
+## 1. Mock IP — bootstrap и actions скипаются
+
+**Файлы:** `.github/workflows/provision.yml`, `.github/workflows/action.yml`
+
+**Логика:**
+```bash
+if [ -z "$PUBLIC_IP" ] || echo "$PUBLIC_IP" | grep -q "^203\.0\.113\."; then
+  IS_MOCK="true"
+fi
 ```
 
-**Что нужно для реального провайдера:**
+`IS_MOCK=true` → bootstrap skipped, в events пишется `bootstrap_skipped`.
+`IS_MOCK=false` → полный цикл: `base.sh` → `docker.sh` → `checkin.sh`.
 
-*Hetzner:*
+Затрагивает все провайдеры кроме `ionos` (реальный `static_ip`) и `mock` (реальный IP от gateway).
+
+**Что нужно для реального провайдера:**
+- `BOOTSTRAP_SSH_KEY` в GitHub Secrets
+- VM должна принимать ключ через cloud-init или провайдерский механизм
+- Mock detection не нужно убирать — не сработает на реальном IP
+
+---
+
+## 2. Tofu modules
+
+**Три режима работы:**
+
+### Режим 1: static IP (IONOS — работает)
+`providers/ionos/provider.json` передаёт `static_ip` → tofu возвращает его как `public_ip` output. Реальный VM не создаётся — используется существующий сервер.
+
+### Режим 2: mock gateway (работает)
+`providers/mock/provider.json` передаёт `gateway_url` + `environment_id`. Tofu делает POST на gateway, polling до `running`, destroy через `/v1/resources/delete`.
+
+### Режим 3: реальный провайдер (WIP)
+
+Пример для **Hetzner** (рекомендуется первым — cx22 ~€3/mo):
 ```hcl
 terraform {
   required_providers {
     hcloud = { source = "hetznercloud/hcloud", version = "~> 1.45" }
   }
 }
+
+variable "hcloud_token" { sensitive = true }
 provider "hcloud" { token = var.hcloud_token }
 
 resource "hcloud_server" "node" {
-  name        = var.name
+  name        = "env-${var.environment_id}"
   server_type = var.server_type
   location    = var.location
   image       = "ubuntu-24.04"
-  ssh_keys    = [hcloud_ssh_key.deploy.id]
+  user_data   = <<-EOF
+    #cloud-config
+    ssh_authorized_keys:
+      - ${tls_private_key.env_key.public_key_openssh}
+  EOF
 }
 
 output "public_ip" { value = hcloud_server.node.ipv4_address }
 ```
 
-*Oracle (Always Free):*
-```hcl
-terraform {
-  required_providers {
-    oci = { source = "oracle/oci", version = "~> 5.0" }
-  }
-}
-# resource "oci_core_instance" "node" { ... }
-```
-
-**Secrets нужно добавить в GitHub:**
-| Провайдер | Secret |
+**GitHub Secrets по провайдеру:**
+| Провайдер | Secrets |
 |---|---|
 | Hetzner | `HCLOUD_TOKEN` |
 | Oracle | `OCI_USER_OCID`, `OCI_TENANCY_OCID`, `OCI_FINGERPRINT`, `OCI_PRIVATE_KEY` |
 | AWS | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (отдельные от R2) |
 | Azure | `ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, `ARM_SUBSCRIPTION_ID`, `ARM_TENANT_ID` |
-| GCP | `GOOGLE_CREDENTIALS` (JSON ключ сервисного аккаунта) |
+| GCP | `GOOGLE_CREDENTIALS` (JSON сервисного аккаунта) |
 | Yandex | `YC_TOKEN`, `YC_CLOUD_ID`, `YC_FOLDER_ID` |
 
 ---
 
-## 2. Bootstrap — SSH скипается на mock IP
+## 3. infra-mock-gateway
 
-**Файл:** `.github/workflows/provision.yml`
+Go-сервер эмулирующий облачный provider API. Полный tofu lifecycle без реальных credentials.
 
-**Что заглушено:**
-```yaml
-- name: Skip bootstrap (mock IP)
-  if: steps.outputs.outputs.is_mock == 'true'
-  # срабатывает если public_ip начинается с 203.0.113.
+**Запуск:**
+```bash
+cd infra-mock-gateway
+go run main.go
+# Dashboard: http://localhost:8080/dashboard
 ```
 
-**Что происходит на mock:** в deployment events появляется `bootstrap_skipped`. Скрипты `bootstrap/base.sh` и `bootstrap/docker.sh` не запускаются.
+**Важно:** если запускаешь на VPS — открой порт до запуска bootstrap:
+```bash
+sudo ufw allow 8080/tcp comment 'Mock Gateway'
+```
+Bootstrap hardening (`base.sh`) закрывает все порты кроме 22. Если gateway на той же машине — открой 8080 заранее или после bootstrap вручную.
 
-**Что нужно для реального провайдера:**
-1. Добавить SSH ключ в GitHub Secrets: `BOOTSTRAP_SSH_KEY` (приватный ключ, соответствующий публичному который кладётся на VM через cloud-init или провайдерский механизм)
-2. При создании VM передавать публичный ключ через `user_data` / `cloud-init`
-3. Mock detection убирать не нужно — она просто не сработает на реальном IP
+**Endpoints:**
+| Endpoint | Method | Описание |
+|---|---|---|
+| `/v1/resources` | POST | Создать `{type, environment_id}` → `{id, ip, status: "creating"}` |
+| `/v1/resources/:id` | GET | Poll → 503 creating / 200 running |
+| `/v1/resources/delete` | POST | Удалить по `{id}` или `{environment_id}` |
+| `/v1/health` | GET | Health check |
+| `/dashboard` | GET | Web UI (live refresh) |
+
+**Chaos headers (опционально):**
+- `X-Chaos-Latency: true` — случайная задержка до 1.5s
+- `X-Chaos-Failure: true` — 25% шанс 500
 
 ---
 
-## 3. Runtime actions — скипаются на mock IP
-
-**Файл:** `.github/workflows/action.yml`
-
-**Что заглушено:** та же логика — если `public_ip` начинается с `203.0.113.`, action помечается `skipped`.
-
-**Затронутые actions:** `reboot`, `run_script`, `redeploy`
-
-**Что нужно:** тот же `BOOTSTRAP_SSH_KEY` что и для bootstrap.
-
----
-
-## 4. Node check-in — только ручной на mock
+## 4. Node checkin — self-cleaning cron
 
 **Файл:** `bootstrap/checkin.sh`
 
-**Что заглушено:** скрипт вызывается в `post_provision`, но до него не доходит на mock (bootstrap скипается).
+При первом запуске регистрирует ноду и устанавливает cron каждые 5 минут (`/usr/local/bin/platform-checkin.sh`).
 
-**Как проверить вручную:**
+**Self-cleanup:** перед каждым checkin скрипт проверяет существование environment через API. Если 404 — удаляет себя из cron и удаляет скрипт. Нода больше не появляется после destroy.
+
+На mock IP checkin не выполняется (bootstrap скипается до него). Проверить вручную:
 ```bash
 curl -X POST https://YOUR_WORKER.workers.dev/api/nodes/checkin \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_CALLBACK_TOKEN" \
-  -d '{
-    "environment_id": "ENV_ID",
-    "hostname": "test-node",
-    "public_ip": "REAL_IP",
-    "agent_version": "0.1.0"
-  }'
+  -H "Authorization: Bearer CALLBACK_TOKEN" \
+  -d '{"environment_id":"ENV_ID","hostname":"test","public_ip":"1.2.3.4","agent_version":"0.1.0"}'
 ```
 
-**Что нужно для реального провайдера:** ничего дополнительно — `checkin.sh` вызывается автоматически последним в `post_provision`.
+---
+
+## 5. Sensitive outputs — шифрование AES-GCM
+
+**Файл:** `workers/control-plane/src/index.ts`
+
+Следующие outputs шифруются перед записью в D1:
+- `ssh_private_key`
+- `db_password`
+- `db_url`
+
+Формат в D1: `enc:<iv_base64>:<ciphertext_base64>`
+
+При чтении через `/api/environments/:id/outputs` расшифровываются прозрачно.
+
+Требует `ENCRYPTION_KEY` в Wrangler secrets (`openssl rand -hex 32`). Старые незашифрованные значения читаются как есть (обратная совместимость).
 
 ---
 
-## 5. Providers — нет реальных credentials
+## 6. Полный список secrets
 
-**Файлы:** `providers/*/provider.json`
+### GitHub Actions secrets
+| Secret | Описание |
+|---|---|
+| `CONTROL_PLANE_URL` | URL воркера |
+| `CALLBACK_TOKEN` | Internal auth |
+| `R2_ACCESS_KEY_ID` | R2 credentials |
+| `R2_SECRET_ACCESS_KEY` | R2 credentials |
+| `R2_BUCKET` | R2 bucket name |
+| `R2_ENDPOINT` | `https://<account_id>.r2.cloudflarestorage.com` |
+| `BOOTSTRAP_SSH_KEY` | ED25519 private key для SSH bootstrap |
+| `TF_VAR_STATIC_IP` | IP существующего сервера (ionos) |
+| `TF_VAR_GATEWAY_URL` | URL mock gateway |
 
-Все провайдеры добавлены в UI и tofu принимает их переменные, но реальных API ключей нет.
+### Cloudflare Workers secrets
+| Secret | Описание |
+|---|---|
+| `GITHUB_TOKEN` | PAT с правами `repo`, `workflow` |
+| `CALLBACK_TOKEN` | Internal auth (совпадает с GitHub) |
+| `ADMIN_KEY` | Ключ для входа в дашборд как admin |
+| `ENCRYPTION_KEY` | AES-256 ключ шифрования outputs |
 
-**Статус подключения:**
-| Провайдер | Tofu vars | Credentials | Реальный ресурс |
-|---|---|---|---|
-| hetzner | ✅ | ❌ | ❌ |
-| oracle | ✅ | ❌ | ❌ |
-| aws | ✅ | ❌ | ❌ |
-| azure | ✅ | ❌ | ❌ |
-| gcp | ✅ | ❌ | ❌ |
-| yandex | ✅ | ❌ | ❌ |
-
----
-
-## 6. Secrets нужные в GitHub и Cloudflare Workers
-
-**GitHub Secrets (уже есть):**
-- `CONTROL_PLANE_URL`
-- `CALLBACK_TOKEN`
-- `GITHUB_TOKEN` (PAT с правами `workflow`)
-- `R2_ACCESS_KEY_ID`
-- `R2_SECRET_ACCESS_KEY`
-- `R2_BUCKET`
-- `R2_ENDPOINT`
-
-**GitHub Secrets (нужны для реального bootstrap):**
-- `BOOTSTRAP_SSH_KEY`
-
-**Cloudflare Workers secrets (wrangler secret put):**
-- `GITHUB_TOKEN`
-- `CALLBACK_TOKEN`
-- `GITHUB_OWNER`
-- `GITHUB_REPO`
-- `GITHUB_WORKFLOW` — имя файла provision workflow
-- `GITHUB_DESTROY_WORKFLOW` — имя файла destroy workflow
-- `GITHUB_ACTION_WORKFLOW` — имя файла action workflow (`action.yml`)
-- `GITHUB_REF` — ветка (`main`)
+> Все secrets устанавливаются автоматически через `bash setup.sh`
 
 ---
 
-## Порядок подключения реального провайдера
+## 7. Порядок подключения реального провайдера
 
-1. Выбрать провайдера (рекомендуется начать с Hetzner — простейший API)
-2. Заменить `main.tf` нужного шаблона на реальный
-3. Добавить провайдерный secret в GitHub
-4. Добавить SSH ключ `BOOTSTRAP_SSH_KEY`
-5. Убедиться что VM создаётся с нужным публичным ключом
-6. Создать environment через UI — наблюдать полный цикл включая bootstrap и checkin
+Рекомендуется начать с **Hetzner** — простейший API.
+
+1. Получить API token: Hetzner Cloud Console → Security → API Tokens
+2. Добавить в `platform.config.yml` под `providers.hetzner`
+3. Написать `templates/docker-host/tofu/main.tf` с `hcloud_server` (пример выше)
+4. Запустить `bash setup.sh` — установит `HCLOUD_TOKEN` в GitHub Secrets
+5. Создать environment с провайдером `hetzner`
+6. Наблюдать полный цикл: provision → bootstrap → checkin → auto-destroy
