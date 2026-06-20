@@ -60,9 +60,9 @@ HOSTNAME=\$(hostname -f 2>/dev/null || hostname)
 PUBLIC_IP="${PUBLIC_IP}"
 CRON_SCRIPT="/usr/local/bin/platform-checkin.sh"
 
-# Check if environment still exists — if not, self-destruct
+# Check if environment still exists -- if not, self-destruct
 HTTP_STATUS=\$(curl -s -o /dev/null -w "%{http_code}" \\
-  "\${CONTROL_PLANE_URL}/api/environments/\${ENVIRONMENT_ID}" \\
+  "\${CONTROL_PLANE_URL}/api/environments/\${ENVIRONMENT_ID}/exists" \\
   -H "Authorization: Bearer \${CALLBACK_TOKEN}" 2>/dev/null || echo "000")
 
 if [ "\$HTTP_STATUS" = "404" ] || [ "\$HTTP_STATUS" = "000" ]; then

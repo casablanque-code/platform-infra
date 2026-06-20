@@ -1670,6 +1670,22 @@ async function reconcileNodeHealth(env: Env) {
   };
 }
 
+// Used by bootstrap/checkin.sh's self-cleaning cron job to detect whether
+// its environment still exists, without needing viewer/operator credentials
+// on the node itself. Intentionally minimal: no env data, just existence.
+app.get("/api/environments/:id/exists", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const { id } = c.req.param();
+  const env = await c.env.DB.prepare(
+    `SELECT id FROM environments WHERE id = ?`
+  ).bind(id).first();
+  if (!env) return c.json({ error: "not found" }, 404);
+  return c.json({ ok: true });
+});
+
 app.get("/api/environments/:id", requireRole("viewer"), async (c) => {
   const { id } = c.req.param();
   const env = await c.env.DB.prepare(
