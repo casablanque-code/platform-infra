@@ -645,12 +645,18 @@ AND (
   const originalStatus = candidate.status as string;
 
   // попытка "захвата"
+  // original_status is set once and preserved across retries (COALESCE):
+  // after a stuck destroy_queued deployment gets requeued by
+  // reconcileStuckDeployments/syncGithubRuns, candidate.status here would
+  // read back as 'queued', which would otherwise clobber the original
+  // 'destroy_queued' marker that reconcileStuckDeployments depends on.
   const lock = await env.DB.prepare(`
     UPDATE deployments
-    SET status = 'dispatching'
+    SET status = 'dispatching',
+        original_status = COALESCE(original_status, ?)
     WHERE id = ?
       AND status IN ('queued', 'destroy_queued')
-  `).bind(deploymentId).run();
+  `).bind(originalStatus, deploymentId).run();
 
   if (lock.meta.changes === 0) {
     return {
