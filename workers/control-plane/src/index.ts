@@ -314,7 +314,7 @@ app.get("/api/deployments", requireRole("viewer"), async (c) => {
   return c.json(result.results);
 });
 
-app.get("/api/deployments/:id/events", async (c) => {
+app.get("/api/deployments/:id/events", requireRole("viewer"), async (c) => {
   const id = c.req.param("id");
 
   const result = await c.env.DB.prepare(`
@@ -329,7 +329,7 @@ app.get("/api/deployments/:id/events", async (c) => {
   return c.json(result.results);
 });
 
-app.get("/api/environments/:id/outputs", async (c) => {
+app.get("/api/environments/:id/outputs", requireRole("operator"), async (c) => {
   const id = c.req.param("id");
 
   const result = await c.env.DB.prepare(`
@@ -1476,7 +1476,7 @@ app.get("/api/nodes", requireRole("viewer"), async (c) => {
   return c.json(results);
 });
 
-app.get("/api/nodes/:id", async (c) => {
+app.get("/api/nodes/:id", requireRole("viewer"), async (c) => {
   const { id } = c.req.param();
 
   const node = await c.env.DB.prepare(
@@ -1598,7 +1598,7 @@ app.post("/api/environments/:id/actions", requireRole("operator"), async (c) => 
   return c.json({ ok: true, action_id: actionId });
 });
 
-app.get("/api/environments/:id/actions", async (c) => {
+app.get("/api/environments/:id/actions", requireRole("viewer"), async (c) => {
   const { id } = c.req.param();
   const { results } = await c.env.DB.prepare(
     `SELECT * FROM actions WHERE environment_id = ? ORDER BY created_at DESC LIMIT 20`
