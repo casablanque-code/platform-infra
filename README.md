@@ -260,7 +260,7 @@ See [MOCK_REGISTRY.md](./MOCK_REGISTRY.md) for per-provider secrets and migratio
 ## Roadmap
 
 - [ ] Real provider modules — Hetzner first (cx22, ~€3/mo)
-- [ ] Zero Trust access — Tailscale mesh, no open ports
+- [x] Zero Trust access — Cloudflare Tunnel via [cfzt](https://github.com/casablanque-code/cfzt); runtime services (Portainer, Uptime Kuma, pgAdmin) are reachable without opening their ports in the firewall. SSH access for provisioning/actions is unaffected.
 - [ ] OPA governance — pre-apply cost/security policies
 - [ ] Template catalog — K3s, WireGuard, Redis, n8n
 - [ ] Secrets management — per-environment encrypted secrets
