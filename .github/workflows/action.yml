@@ -70,12 +70,19 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}"
 
       # ── SSH setup ─────────────────────────────────────────────────────────────
-      - name: Setup SSH key
+      # Uses the per-environment SSH key (not the shared BOOTSTRAP_SSH_KEY)
+      # so a compromised bootstrap key doesn't grant access to nodes whose
+      # bootstrap key was already rotated out of authorized_keys.
+      - name: Fetch environment SSH key
         if: steps.mock.outputs.is_mock == 'false'
         run: |
+          CREDS=$(curl -sf "${{ secrets.CONTROL_PLANE_URL }}/api/environments/${{ inputs.environment_id }}/ssh-credentials" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}")
           mkdir -p ~/.ssh
-          echo "${{ secrets.BOOTSTRAP_SSH_KEY }}" > ~/.ssh/action_key
+          echo "$CREDS" | jq -r '.ssh_private_key' > ~/.ssh/action_key
           chmod 600 ~/.ssh/action_key
+          SSH_USER=$(echo "$CREDS" | jq -r '.ssh_user // "root"')
+          echo "ssh_user=$SSH_USER" >> $GITHUB_ENV
           cat >> ~/.ssh/config << EOF
           Host ${{ inputs.public_ip }}
             StrictHostKeyChecking no
@@ -89,7 +96,7 @@ jobs:
         if: steps.mock.outputs.is_mock == 'false' && inputs.action_type == 'reboot'
         env:
           SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/action_key -p ${{ inputs.ssh_port }}"
-          TARGET: "root@${{ inputs.public_ip }}"
+          TARGET: "${{ env.ssh_user }}@${{ inputs.public_ip }}"
         run: |
           curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/event" \
             -H "Content-Type: application/json" \
@@ -103,7 +110,7 @@ jobs:
         env:
           SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/action_key -p ${{ inputs.ssh_port }}"
           SCP_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/action_key -P ${{ inputs.ssh_port }}"
-          TARGET: "root@${{ inputs.public_ip }}"
+          TARGET: "${{ env.ssh_user }}@${{ inputs.public_ip }}"
         run: |
           RUNTIME_FILE="templates/${{ inputs.action_type }}/runtime.json"
           SCRIPT=$(echo '${{ inputs.params }}' | jq -r '.script // empty')
@@ -144,3 +151,10 @@ jobs:
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
             -d '{"type":"failed","message":"Action workflow failed — check GitHub Actions logs"}'
+
+      # ── Cleanup ───────────────────────────────────────────────────────────────
+      # GitHub-hosted runners are ephemeral and torn down after the job anyway,
+      # but wipe the fetched private key explicitly rather than relying on that.
+      - name: Wipe fetched SSH key
+        if: always()
+        run: rm -f ~/.ssh/action_key

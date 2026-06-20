@@ -314,7 +314,7 @@ app.get("/api/deployments", requireRole("viewer"), async (c) => {
   return c.json(result.results);
 });
 
-app.get("/api/deployments/:id/events", async (c) => {
+app.get("/api/deployments/:id/events", requireRole("viewer"), async (c) => {
   const id = c.req.param("id");
 
   const result = await c.env.DB.prepare(`
@@ -329,7 +329,46 @@ app.get("/api/deployments/:id/events", async (c) => {
   return c.json(result.results);
 });
 
-app.get("/api/environments/:id/outputs", async (c) => {
+// Used by action.yml (and provision.yml's post-provision steps going
+// forward) to fetch just the per-environment SSH credentials needed to
+// connect, without handing out an operator-level API key to the runner.
+// Gated by CALLBACK_TOKEN, same trust boundary as the other GitHub
+// Actions callback endpoints -- not requireRole(), since this runs from
+// the executor, not a logged-in user.
+app.get("/api/environments/:id/ssh-credentials", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const id = c.req.param("id");
+  const SSH_KEYS = new Set(["ssh_private_key", "ssh_user", "ssh_port"]);
+
+  const result = await c.env.DB.prepare(`
+    SELECT output_key, output_value
+    FROM deployment_outputs
+    WHERE environment_id = ?
+    ORDER BY created_at DESC
+  `)
+    .bind(id)
+    .all();
+
+  const creds: Record<string, string> = {};
+  for (const row of result.results as any[]) {
+    if (!SSH_KEYS.has(row.output_key) || row.output_key in creds) continue;
+    creds[row.output_key] = SENSITIVE_KEYS.has(row.output_key) && c.env.ENCRYPTION_KEY
+      ? await decryptValue(row.output_value, c.env.ENCRYPTION_KEY)
+      : row.output_value;
+  }
+
+  if (!creds.ssh_private_key) {
+    return c.json({ error: "no ssh credentials found for environment" }, 404);
+  }
+
+  return c.json(creds);
+});
+
+app.get("/api/environments/:id/outputs", requireRole("operator"), async (c) => {
   const id = c.req.param("id");
 
   const result = await c.env.DB.prepare(`
@@ -645,12 +684,18 @@ AND (
   const originalStatus = candidate.status as string;
 
   // попытка "захвата"
+  // original_status is set once and preserved across retries (COALESCE):
+  // after a stuck destroy_queued deployment gets requeued by
+  // reconcileStuckDeployments/syncGithubRuns, candidate.status here would
+  // read back as 'queued', which would otherwise clobber the original
+  // 'destroy_queued' marker that reconcileStuckDeployments depends on.
   const lock = await env.DB.prepare(`
     UPDATE deployments
-    SET status = 'dispatching'
+    SET status = 'dispatching',
+        original_status = COALESCE(original_status, ?)
     WHERE id = ?
       AND status IN ('queued', 'destroy_queued')
-  `).bind(deploymentId).run();
+  `).bind(originalStatus, deploymentId).run();
 
   if (lock.meta.changes === 0) {
     return {
@@ -1476,7 +1521,7 @@ app.get("/api/nodes", requireRole("viewer"), async (c) => {
   return c.json(results);
 });
 
-app.get("/api/nodes/:id", async (c) => {
+app.get("/api/nodes/:id", requireRole("viewer"), async (c) => {
   const { id } = c.req.param();
 
   const node = await c.env.DB.prepare(
@@ -1598,7 +1643,7 @@ app.post("/api/environments/:id/actions", requireRole("operator"), async (c) => 
   return c.json({ ok: true, action_id: actionId });
 });
 
-app.get("/api/environments/:id/actions", async (c) => {
+app.get("/api/environments/:id/actions", requireRole("viewer"), async (c) => {
   const { id } = c.req.param();
   const { results } = await c.env.DB.prepare(
     `SELECT * FROM actions WHERE environment_id = ? ORDER BY created_at DESC LIMIT 20`
@@ -1669,6 +1714,22 @@ async function reconcileNodeHealth(env: Env) {
     recovered: recovered.results.length,
   };
 }
+
+// Used by bootstrap/checkin.sh's self-cleaning cron job to detect whether
+// its environment still exists, without needing viewer/operator credentials
+// on the node itself. Intentionally minimal: no env data, just existence.
+app.get("/api/environments/:id/exists", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const { id } = c.req.param();
+  const env = await c.env.DB.prepare(
+    `SELECT id FROM environments WHERE id = ?`
+  ).bind(id).first();
+  if (!env) return c.json({ error: "not found" }, 404);
+  return c.json({ ok: true });
+});
 
 app.get("/api/environments/:id", requireRole("viewer"), async (c) => {
   const { id } = c.req.param();
