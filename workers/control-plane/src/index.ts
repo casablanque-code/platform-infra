@@ -329,6 +329,45 @@ app.get("/api/deployments/:id/events", requireRole("viewer"), async (c) => {
   return c.json(result.results);
 });
 
+// Used by action.yml (and provision.yml's post-provision steps going
+// forward) to fetch just the per-environment SSH credentials needed to
+// connect, without handing out an operator-level API key to the runner.
+// Gated by CALLBACK_TOKEN, same trust boundary as the other GitHub
+// Actions callback endpoints -- not requireRole(), since this runs from
+// the executor, not a logged-in user.
+app.get("/api/environments/:id/ssh-credentials", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const id = c.req.param("id");
+  const SSH_KEYS = new Set(["ssh_private_key", "ssh_user", "ssh_port"]);
+
+  const result = await c.env.DB.prepare(`
+    SELECT output_key, output_value
+    FROM deployment_outputs
+    WHERE environment_id = ?
+    ORDER BY created_at DESC
+  `)
+    .bind(id)
+    .all();
+
+  const creds: Record<string, string> = {};
+  for (const row of result.results as any[]) {
+    if (!SSH_KEYS.has(row.output_key) || row.output_key in creds) continue;
+    creds[row.output_key] = SENSITIVE_KEYS.has(row.output_key) && c.env.ENCRYPTION_KEY
+      ? await decryptValue(row.output_value, c.env.ENCRYPTION_KEY)
+      : row.output_value;
+  }
+
+  if (!creds.ssh_private_key) {
+    return c.json({ error: "no ssh credentials found for environment" }, 404);
+  }
+
+  return c.json(creds);
+});
+
 app.get("/api/environments/:id/outputs", requireRole("operator"), async (c) => {
   const id = c.req.param("id");
 

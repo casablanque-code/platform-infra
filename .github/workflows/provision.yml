@@ -222,6 +222,41 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
             -d '{"type":"bootstrap_complete","message":"All bootstrap scripts executed successfully"}'
 
+      - name: Revoke shared bootstrap key from server
+        if: steps.outputs.outputs.is_mock == 'false' && steps.runtime.outputs.has_bootstrap == 'true'
+        env:
+          SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/bootstrap_key -p ${{ steps.outputs.outputs.ssh_port }}"
+          TARGET: "${{ steps.outputs.outputs.ssh_user }}@${{ steps.outputs.outputs.public_ip }}"
+        run: |
+          # Bootstrap is fully done and the per-environment key is already in
+          # authorized_keys -- remove the shared BOOTSTRAP_SSH_KEY's public key
+          # so a leaked bootstrap key no longer grants access to this node.
+          # The pubkey is derived here on the runner and piped over stdin to a
+          # fixed remote script (passed as the SSH command), rather than
+          # interpolated into a quoted command string, to avoid escaping bugs.
+          #
+          # Non-fatal: the node is otherwise fully provisioned at this point.
+          # Failing the whole job here would leave a working server stuck in
+          # 'dispatching' until reconcileStuckDeployments retries it from
+          # scratch, which is wasteful for what's just a leftover access key.
+          set +e
+          ssh-keygen -y -f ~/.ssh/bootstrap_key > bootstrap_key.pub
+
+          ssh $SSH_OPTS "$TARGET" '
+            BOOTSTRAP_PUBKEY=$(cat)
+            if [ -f ~/.ssh/authorized_keys ]; then
+              grep -vF "$BOOTSTRAP_PUBKEY" ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.tmp || true
+              mv ~/.ssh/authorized_keys.tmp ~/.ssh/authorized_keys
+              chmod 600 ~/.ssh/authorized_keys
+              echo "Bootstrap key revoked from authorized_keys"
+            fi
+          ' < bootstrap_key.pub
+
+          if [ $? -ne 0 ]; then
+            echo "::warning::Failed to revoke shared bootstrap key on ${{ steps.outputs.outputs.public_ip }} -- the node remains reachable with BOOTSTRAP_SSH_KEY until this is cleaned up manually"
+          fi
+          set -e
+
       - name: Complete deployment
         run: |
           curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/complete" \
@@ -234,3 +269,8 @@ jobs:
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
             -d '{"type":"provision_failed","message":"Workflow failed — check GitHub Actions logs"}'
+
+      # ── Cleanup ───────────────────────────────────────────────────────────────
+      - name: Wipe bootstrap key material
+        if: always()
+        run: rm -f ~/.ssh/bootstrap_key bootstrap_key.pub
