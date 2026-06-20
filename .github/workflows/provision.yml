@@ -211,6 +211,9 @@ jobs:
               export CALLBACK_TOKEN=\"${{ secrets.CALLBACK_TOKEN }}\"
               export ENVIRONMENT_ID=\"${{ inputs.environment_id }}\"
               export ENV_PUBLIC_IP=\"${{ steps.outputs.outputs.public_ip }}\"
+              export CFZT_API_TOKEN=\"${{ secrets.CFZT_API_TOKEN }}\"
+              export CFZT_ACCOUNT_ID=\"${{ secrets.CFZT_ACCOUNT_ID }}\"
+              export CFZT_DOMAIN=\"${{ secrets.CFZT_DOMAIN }}\"
               chmod +x /tmp/$(basename $SCRIPT)
               /tmp/$(basename $SCRIPT)
             '"
