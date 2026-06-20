@@ -126,6 +126,7 @@ jobs:
             export CONTROL_PLANE_URL=\"${{ secrets.CONTROL_PLANE_URL }}\"
             export CALLBACK_TOKEN=\"${{ secrets.CALLBACK_TOKEN }}\"
             export ENVIRONMENT_ID=\"${{ inputs.environment_id }}\"
+            export CFZT_DOMAIN=\"${{ secrets.CFZT_DOMAIN }}\"
             chmod +x /tmp/$(basename $SCRIPT)
             /tmp/$(basename $SCRIPT)
           '"

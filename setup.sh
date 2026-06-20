@@ -66,6 +66,10 @@ IONOS_USER=$(read_cfg '.providers.ionos.ssh_user')
 MOCK_ENABLED=$(read_cfg '.providers.mock.enabled')
 MOCK_URL=$(read_cfg '.providers.mock.gateway_url')
 
+CFZT_API_TOKEN=$(read_cfg '.cloudflare_tunnel.api_token')
+CFZT_ACCOUNT_ID=$(read_cfg '.cloudflare_tunnel.account_id')
+CFZT_DOMAIN=$(read_cfg '.cloudflare_tunnel.domain')
+
 # Validate required fields
 [ -n "$CF_D1_ID" ] && [ "$CF_D1_ID" != "null" ] || err "cloudflare.d1_database_id is required"
 [ -n "$GH_OWNER" ] && [ "$GH_OWNER" != "null" ]  || err "github.owner is required"
@@ -197,6 +201,17 @@ if [ -n "$SSH_KEY" ] && [ "$SSH_KEY" != "null" ] && echo "$SSH_KEY" | grep -q "O
   gh secret set BOOTSTRAP_SSH_KEY --body "$SSH_KEY" --repo "$GH_FULL_REPO" && ok "BOOTSTRAP_SSH_KEY"
 else
   warn "bootstrap.ssh_private_key not set — BOOTSTRAP_SSH_KEY skipped (required for real servers)"
+fi
+
+if [ -n "$CFZT_DOMAIN" ] && [ "$CFZT_DOMAIN" != "null" ]; then
+  if [ -z "$CFZT_API_TOKEN" ] || [ "$CFZT_API_TOKEN" = "null" ] || [ -z "$CFZT_ACCOUNT_ID" ] || [ "$CFZT_ACCOUNT_ID" = "null" ]; then
+    err "cloudflare_tunnel.domain is set but api_token or account_id is missing — fill in all three or leave domain blank to skip cfzt"
+  fi
+  gh secret set CFZT_API_TOKEN  --body "$CFZT_API_TOKEN"  --repo "$GH_FULL_REPO" && ok "CFZT_API_TOKEN"
+  gh secret set CFZT_ACCOUNT_ID --body "$CFZT_ACCOUNT_ID" --repo "$GH_FULL_REPO" && ok "CFZT_ACCOUNT_ID"
+  gh secret set CFZT_DOMAIN     --body "$CFZT_DOMAIN"     --repo "$GH_FULL_REPO" && ok "CFZT_DOMAIN"
+else
+  warn "cloudflare_tunnel.domain not set — cfzt skipped (services will use direct access only)"
 fi
 
 if [ "$IONOS_ENABLED" = "true" ] && [ -n "$IONOS_IP" ] && [ "$IONOS_IP" != "null" ]; then

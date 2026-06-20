@@ -54,6 +54,24 @@ secrets:
   # Generate: openssl rand -hex 32
   encryption_key: ""
 
+# ── Cloudflare Zero Trust tunnels (cfzt) ────────────────────────────────────────
+# Optional — leave domain blank to skip. Without this, services installed via
+# runtime actions (Portainer, Uptime Kuma, pgAdmin) fall back to whatever
+# direct access the template's firewall rules allow.
+
+cloudflare_tunnel:
+  # API token with: Account / Cloudflare Tunnel / Edit, Zone / DNS / Edit,
+  # Account / Access: Apps and Policies / Edit
+  # Create at: Cloudflare dashboard → My Profile → API Tokens
+  api_token: ""
+
+  # Same Cloudflare account ID as the `cloudflare:` section above
+  account_id: ""
+
+  # Domain on Cloudflare that tunnels will be published under
+  # (e.g. "example.com" -> https://portainer.example.com)
+  domain: ""
+
 # ── Providers ──────────────────────────────────────────────────────────────────
 
 providers:
