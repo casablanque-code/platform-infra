@@ -556,6 +556,63 @@ app.post("/api/environments/:id/destroy", requireRole("operator"), async (c) => 
   });
 });
 
+// Called by action.yml when action_type == 'redeploy'. Creates a new queued
+// deployment for the environment so processDeploymentQueue picks it up on the
+// next cron tick and re-runs tofu apply. Existing R2 state is reused, so
+// provider resources that haven't changed won't be recreated.
+app.post("/api/environments/:id/redeploy", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const id = c.req.param("id");
+
+  const environment = await c.env.DB.prepare(
+    `SELECT * FROM environments WHERE id = ?`
+  ).bind(id).first();
+
+  if (!environment) {
+    return c.json({ error: "environment not found" }, 404);
+  }
+
+  // Don't queue a redeploy on top of an already in-flight operation
+  const inFlight = await c.env.DB.prepare(`
+    SELECT id FROM deployments
+    WHERE environment_id = ?
+      AND status IN ('queued', 'dispatching', 'destroy_queued')
+    LIMIT 1
+  `).bind(id).first();
+
+  if (inFlight) {
+    return c.json({ error: "deployment already in progress" }, 409);
+  }
+
+  const deploymentId = crypto.randomUUID();
+
+  await c.env.DB.prepare(`
+    INSERT INTO deployments (id, environment_id, environment_name, provider, status, created_at)
+    VALUES (?, ?, ?, ?, 'queued', ?)
+  `).bind(
+    deploymentId,
+    id,
+    environment.name,
+    environment.provider,
+    new Date().toISOString()
+  ).run();
+
+  await c.env.DB.prepare(`
+    UPDATE environments SET status = 'provisioning', updated_at = ? WHERE id = ?
+  `).bind(new Date().toISOString(), id).run();
+
+  await addDeploymentEvent(
+    c.env.DB, deploymentId, id,
+    "queued", "Redeploy queued from dashboard action"
+  );
+
+  return c.json({ ok: true, deployment_id: deploymentId });
+});
+
 app.post("/api/environments", requireRole("operator"), async (c) => {
   const body = await c.req.json<{
     name: string;
