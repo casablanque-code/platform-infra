@@ -150,6 +150,7 @@ const SENSITIVE_KEYS = new Set([
   "ssh_private_key",
   "db_password",
   "db_url",
+  "pgadmin_password",
 ]);
 
 async function getEncryptionKey(rawKey: string): Promise<CryptoKey> {
@@ -400,6 +401,45 @@ app.get("/api/environments/:id/db-credentials", async (c) => {
   }
 
   return c.json(creds);
+});
+
+// Used by install scripts running on the node (e.g. install_pgadmin.sh) to
+// persist service credentials into deployment_outputs so they aren't lost
+// after the GitHub Actions log expires. Values for keys in SENSITIVE_KEYS are
+// encrypted before storage, same as tofu outputs.
+// Gated by CALLBACK_TOKEN -- no operator API key needed on the node.
+app.post("/api/environments/:id/service-outputs", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const id = c.req.param("id");
+
+  const env = await c.env.DB.prepare(
+    `SELECT id FROM environments WHERE id = ?`
+  ).bind(id).first();
+  if (!env) return c.json({ error: "environment not found" }, 404);
+
+  const body = await c.req.json<Record<string, string>>();
+  const now = new Date().toISOString();
+
+  for (const [key, value] of Object.entries(body)) {
+    if (typeof value !== "string") continue;
+
+    const storedValue = SENSITIVE_KEYS.has(key) && c.env.ENCRYPTION_KEY
+      ? await encryptValue(JSON.stringify(value), c.env.ENCRYPTION_KEY)
+      : JSON.stringify(value);
+
+    // Latest row wins on read (readers ORDER BY created_at DESC), so just
+    // insert a fresh row -- no upsert needed, no unique constraint exists.
+    await c.env.DB.prepare(`
+      INSERT INTO deployment_outputs (id, deployment_id, environment_id, output_key, output_value, created_at)
+      VALUES (?, '', ?, ?, ?, ?)
+    `).bind(crypto.randomUUID(), id, key, storedValue, now).run();
+  }
+
+  return c.json({ ok: true, saved: Object.keys(body).length });
 });
 
 app.get("/api/environments/:id/outputs", requireRole("operator"), async (c) => {

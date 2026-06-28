@@ -41,7 +41,17 @@ docker run -d \
 log "pgAdmin available at http://<PUBLIC_IP>:5050"
 log "Login: $PGADMIN_EMAIL / $PGADMIN_PASSWORD"
 
-# TODO: open port 5050 in firewall when real provider is connected
-# TODO: pass db credentials via CONTROL_PLANE_URL outputs
+# Persist credentials to control plane so they survive past the GitHub Actions
+# log (which expires after 90 days). pgadmin_password is in SENSITIVE_KEYS so
+# it gets encrypted at rest in D1.
+if [ -n "${CONTROL_PLANE_URL:-}" ] && [ -n "${CALLBACK_TOKEN:-}" ] && [ -n "${ENVIRONMENT_ID:-}" ]; then
+  log "Saving pgAdmin credentials to control plane..."
+  curl -sf -X POST "${CONTROL_PLANE_URL}/api/environments/${ENVIRONMENT_ID}/service-outputs" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
+    -d "{\"pgadmin_email\":\"${PGADMIN_EMAIL}\",\"pgadmin_password\":\"${PGADMIN_PASSWORD}\"}" \
+  && log "Credentials saved." \
+  || log "WARNING: failed to save credentials to control plane -- note them from this log"
+fi
 
 expose_via_cfzt
