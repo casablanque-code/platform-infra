@@ -368,6 +368,40 @@ app.get("/api/environments/:id/ssh-credentials", async (c) => {
   return c.json(creds);
 });
 
+// Used by backup_to_r2.sh running on the node itself to fetch DB credentials
+// without needing an operator API key on the node. Same trust boundary as
+// /ssh-credentials -- CALLBACK_TOKEN only, no user RBAC.
+app.get("/api/environments/:id/db-credentials", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const id = c.req.param("id");
+  const DB_KEYS = new Set(["db_password", "db_user", "db_name", "db_port"]);
+
+  const result = await c.env.DB.prepare(`
+    SELECT output_key, output_value
+    FROM deployment_outputs
+    WHERE environment_id = ?
+    ORDER BY created_at DESC
+  `).bind(id).all();
+
+  const creds: Record<string, string> = {};
+  for (const row of result.results as any[]) {
+    if (!DB_KEYS.has(row.output_key) || row.output_key in creds) continue;
+    creds[row.output_key] = SENSITIVE_KEYS.has(row.output_key) && c.env.ENCRYPTION_KEY
+      ? await decryptValue(row.output_value, c.env.ENCRYPTION_KEY)
+      : row.output_value;
+  }
+
+  if (!creds.db_password) {
+    return c.json({ error: "no db credentials found for environment" }, 404);
+  }
+
+  return c.json(creds);
+});
+
 app.get("/api/environments/:id/outputs", requireRole("operator"), async (c) => {
   const id = c.req.param("id");
 
