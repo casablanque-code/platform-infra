@@ -1,5 +1,7 @@
 name: Destroy Environment
 
+run-name: "Destroy Environment [${{ inputs.deployment_id }}]"
+
 on:
   workflow_dispatch:
     inputs:
