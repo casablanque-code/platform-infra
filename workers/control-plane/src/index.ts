@@ -150,6 +150,7 @@ const SENSITIVE_KEYS = new Set([
   "ssh_private_key",
   "db_password",
   "db_url",
+  "pgadmin_password",
 ]);
 
 async function getEncryptionKey(rawKey: string): Promise<CryptoKey> {
@@ -368,6 +369,79 @@ app.get("/api/environments/:id/ssh-credentials", async (c) => {
   return c.json(creds);
 });
 
+// Used by backup_to_r2.sh running on the node itself to fetch DB credentials
+// without needing an operator API key on the node. Same trust boundary as
+// /ssh-credentials -- CALLBACK_TOKEN only, no user RBAC.
+app.get("/api/environments/:id/db-credentials", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const id = c.req.param("id");
+  const DB_KEYS = new Set(["db_password", "db_user", "db_name", "db_port"]);
+
+  const result = await c.env.DB.prepare(`
+    SELECT output_key, output_value
+    FROM deployment_outputs
+    WHERE environment_id = ?
+    ORDER BY created_at DESC
+  `).bind(id).all();
+
+  const creds: Record<string, string> = {};
+  for (const row of result.results as any[]) {
+    if (!DB_KEYS.has(row.output_key) || row.output_key in creds) continue;
+    creds[row.output_key] = SENSITIVE_KEYS.has(row.output_key) && c.env.ENCRYPTION_KEY
+      ? await decryptValue(row.output_value, c.env.ENCRYPTION_KEY)
+      : row.output_value;
+  }
+
+  if (!creds.db_password) {
+    return c.json({ error: "no db credentials found for environment" }, 404);
+  }
+
+  return c.json(creds);
+});
+
+// Used by install scripts running on the node (e.g. install_pgadmin.sh) to
+// persist service credentials into deployment_outputs so they aren't lost
+// after the GitHub Actions log expires. Values for keys in SENSITIVE_KEYS are
+// encrypted before storage, same as tofu outputs.
+// Gated by CALLBACK_TOKEN -- no operator API key needed on the node.
+app.post("/api/environments/:id/service-outputs", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const id = c.req.param("id");
+
+  const env = await c.env.DB.prepare(
+    `SELECT id FROM environments WHERE id = ?`
+  ).bind(id).first();
+  if (!env) return c.json({ error: "environment not found" }, 404);
+
+  const body = await c.req.json<Record<string, string>>();
+  const now = new Date().toISOString();
+
+  for (const [key, value] of Object.entries(body)) {
+    if (typeof value !== "string") continue;
+
+    const storedValue = SENSITIVE_KEYS.has(key) && c.env.ENCRYPTION_KEY
+      ? await encryptValue(JSON.stringify(value), c.env.ENCRYPTION_KEY)
+      : JSON.stringify(value);
+
+    // Latest row wins on read (readers ORDER BY created_at DESC), so just
+    // insert a fresh row -- no upsert needed, no unique constraint exists.
+    await c.env.DB.prepare(`
+      INSERT INTO deployment_outputs (id, deployment_id, environment_id, output_key, output_value, created_at)
+      VALUES (?, '', ?, ?, ?, ?)
+    `).bind(crypto.randomUUID(), id, key, storedValue, now).run();
+  }
+
+  return c.json({ ok: true, saved: Object.keys(body).length });
+});
+
 app.get("/api/environments/:id/outputs", requireRole("operator"), async (c) => {
   const id = c.req.param("id");
 
@@ -554,6 +628,63 @@ app.post("/api/environments/:id/destroy", requireRole("operator"), async (c) => 
     deployment_id: deploymentId,
     status: "destroy_queued",
   });
+});
+
+// Called by action.yml when action_type == 'redeploy'. Creates a new queued
+// deployment for the environment so processDeploymentQueue picks it up on the
+// next cron tick and re-runs tofu apply. Existing R2 state is reused, so
+// provider resources that haven't changed won't be recreated.
+app.post("/api/environments/:id/redeploy", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const id = c.req.param("id");
+
+  const environment = await c.env.DB.prepare(
+    `SELECT * FROM environments WHERE id = ?`
+  ).bind(id).first();
+
+  if (!environment) {
+    return c.json({ error: "environment not found" }, 404);
+  }
+
+  // Don't queue a redeploy on top of an already in-flight operation
+  const inFlight = await c.env.DB.prepare(`
+    SELECT id FROM deployments
+    WHERE environment_id = ?
+      AND status IN ('queued', 'dispatching', 'destroy_queued')
+    LIMIT 1
+  `).bind(id).first();
+
+  if (inFlight) {
+    return c.json({ error: "deployment already in progress" }, 409);
+  }
+
+  const deploymentId = crypto.randomUUID();
+
+  await c.env.DB.prepare(`
+    INSERT INTO deployments (id, environment_id, environment_name, provider, status, created_at)
+    VALUES (?, ?, ?, ?, 'queued', ?)
+  `).bind(
+    deploymentId,
+    id,
+    environment.name,
+    environment.provider,
+    new Date().toISOString()
+  ).run();
+
+  await c.env.DB.prepare(`
+    UPDATE environments SET status = 'provisioning', updated_at = ? WHERE id = ?
+  `).bind(new Date().toISOString(), id).run();
+
+  await addDeploymentEvent(
+    c.env.DB, deploymentId, id,
+    "queued", "Redeploy queued from dashboard action"
+  );
+
+  return c.json({ ok: true, deployment_id: deploymentId });
 });
 
 app.post("/api/environments", requireRole("operator"), async (c) => {

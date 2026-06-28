@@ -127,6 +127,10 @@ jobs:
             export CALLBACK_TOKEN=\"${{ secrets.CALLBACK_TOKEN }}\"
             export ENVIRONMENT_ID=\"${{ inputs.environment_id }}\"
             export CFZT_DOMAIN=\"${{ secrets.CFZT_DOMAIN }}\"
+            export R2_ACCESS_KEY_ID=\"${{ secrets.R2_ACCESS_KEY_ID }}\"
+            export R2_SECRET_ACCESS_KEY=\"${{ secrets.R2_SECRET_ACCESS_KEY }}\"
+            export R2_BUCKET=\"${{ secrets.R2_BUCKET }}\"
+            export R2_ENDPOINT=\"${{ secrets.R2_ENDPOINT }}\"
             chmod +x /tmp/$(basename $SCRIPT)
             /tmp/$(basename $SCRIPT)
           '"
