@@ -1170,7 +1170,7 @@ async function syncGithubRuns(env: Env) {
     
 
     const res = await fetch(
-      `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/runs?per_page=5`,
+      `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/runs?per_page=10`,
       {
         headers: {
           Authorization: `Bearer ${env.GITHUB_TOKEN}`,
@@ -1183,14 +1183,14 @@ async function syncGithubRuns(env: Env) {
 
     const data: any = await res.json();
 
-    // Match any workflow run (provision or destroy) — filter by recency
-    const deploymentCreatedAt = new Date(item.created_at as string).getTime();
-    const run = data.workflow_runs?.find((r: any) => {
-      const runCreatedAt = new Date(r.created_at).getTime();
-      // Must be created after this deployment was dispatched
-      return runCreatedAt >= deploymentCreatedAt - 60_000 &&
-        (r.name === "Provision Environment" || r.name === "Destroy Environment");
-    });
+    // Match by deployment_id embedded in the run's display_title
+    // (set via run-name in provision.yml / destroy.yml).
+    // This is exact -- no time-window heuristic, no risk of two parallel
+    // provision runs being matched to each other's deployments.
+    const run = data.workflow_runs?.find((r: any) =>
+      typeof r.display_title === "string" &&
+      r.display_title.includes(`[${deploymentId}]`)
+    );
 
     if (!run) continue;
 
