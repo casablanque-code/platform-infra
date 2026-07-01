@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { InfraNode } from "../types";
+import type { InfraNode } from "../types";
 import { useAuthFetch } from "../api";
 import { Card, EmptyState, DeleteConfirm, timeAgo } from "./ui";
 

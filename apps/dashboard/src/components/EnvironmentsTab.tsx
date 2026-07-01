@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Environment, InfraNode, EnvironmentOutput, Action } from "../types";
+import type { Environment, InfraNode, EnvironmentOutput, Action } from "../types";
 import { useAuthFetch } from "../api";
 import { Card, EmptyState, StatusPill, DeleteConfirm, PlaybookDropdown, ttlInfo, timeAgo } from "./ui";
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Deployment, DeploymentEvent } from "../types";
+import type { Deployment, DeploymentEvent } from "../types";
 import { useAuthFetch } from "../api";
 import { Card, EmptyState, StatusPill, DeleteConfirm, statusColor, timeAgo } from "./ui";
 

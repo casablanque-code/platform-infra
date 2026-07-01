@@ -1,4 +1,4 @@
-import { Environment, Deployment, InfraNode, PlatformTemplate, Tab } from "../types";
+import type { Environment, Deployment, InfraNode, PlatformTemplate, Tab } from "../types";
 import { Card, SectionLabel, EmptyState, StatusPill, timeAgo } from "./ui";
 
 export function DashboardTab({

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { PlatformTemplate } from "../types";
+import type { PlatformTemplate } from "../types";
 import { useAuthFetch, LIME } from "../api";
 
 const TTL_OPTIONS = [
