@@ -83,13 +83,9 @@ jobs:
           chmod 600 ~/.ssh/action_key
           SSH_USER=$(echo "$CREDS" | jq -r '.ssh_user // "root"')
           echo "ssh_user=$SSH_USER" >> $GITHUB_ENV
-          cat >> ~/.ssh/config << EOF
-          Host ${{ inputs.public_ip }}
-            StrictHostKeyChecking no
-            UserKnownHostsFile /dev/null
-            IdentityFile ~/.ssh/action_key
-            Port ${{ inputs.ssh_port }}
-          EOF
+          printf 'Host %s\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  IdentityFile ~/.ssh/action_key\n  Port %s\n' \
+            "${{ inputs.public_ip }}" \
+            "${{ inputs.ssh_port }}" >> ~/.ssh/config
 
       # ── reboot ────────────────────────────────────────────────────────────────
       - name: Reboot

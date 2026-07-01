@@ -142,13 +142,9 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.BOOTSTRAP_SSH_KEY }}" > ~/.ssh/bootstrap_key
           chmod 600 ~/.ssh/bootstrap_key
-          cat >> ~/.ssh/config << EOF
-          Host ${{ steps.outputs.outputs.public_ip }}
-            StrictHostKeyChecking no
-            UserKnownHostsFile /dev/null
-            IdentityFile ~/.ssh/bootstrap_key
-            Port ${{ steps.outputs.outputs.ssh_port }}
-          EOF
+          printf 'Host %s\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  IdentityFile ~/.ssh/bootstrap_key\n  Port %s\n' \
+            "${{ steps.outputs.outputs.public_ip }}" \
+            "${{ steps.outputs.outputs.ssh_port }}" >> ~/.ssh/config
 
       - name: Install environment SSH key on server
         if: steps.outputs.outputs.is_mock == 'false' && steps.runtime.outputs.has_bootstrap == 'true'
