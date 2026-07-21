@@ -8,30 +8,25 @@ on:
       deployment_id:
         required: true
         type: string
-
       environment_id:
         required: true
         type: string
-
       environment_name:
         required: true
         type: string
-
       provider:
         required: true
         type: string
-
       region:
         required: true
         type: string
-
       template:
         required: true
         type: string
 
 jobs:
   provision:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, incus-host]
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -64,12 +59,19 @@ jobs:
       - name: Generate tfvars
         working-directory: ${{ steps.runtime.outputs.module_path }}
         run: |
-          # Merge provider tfvars with dynamic environment_id
-          jq --arg env_id "${{ inputs.environment_id }}" \
-            '.runtime.tfvars + {environment_id: $env_id}' \
+          jq --arg env_id   "${{ inputs.environment_id }}" \
+             --arg env_name "${{ inputs.environment_name }}" \
+             --arg addr     "${{ secrets.INCUS_REMOTE_ADDR }}" \
+             --arg token    "${{ secrets.INCUS_TOKEN }}" \
+            '.runtime.tfvars + {
+               environment_id:    $env_id,
+               environment_name:  $env_name,
+               incus_remote_addr: $addr,
+               incus_token:       $token
+             }' \
             "../../../providers/${{ inputs.provider }}/provider.json" \
             > terraform.tfvars.json
-          cat terraform.tfvars.json
+          jq 'del(.incus_token)' terraform.tfvars.json
 
       - name: Notify runtime resolved
         run: |
@@ -80,9 +82,6 @@ jobs:
 
       - name: OpenTofu init
         working-directory: ${{ steps.runtime.outputs.module_path }}
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           tofu init \
             -backend-config="bucket=${{ secrets.R2_BUCKET }}" \
@@ -96,37 +95,35 @@ jobs:
 
       - name: OpenTofu apply
         working-directory: ${{ steps.runtime.outputs.module_path }}
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           tofu apply -auto-approve
 
       - name: Capture outputs
         id: outputs
         working-directory: ${{ steps.runtime.outputs.module_path }}
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           tofu output -json > outputs.json
-          cat outputs.json
 
           PUBLIC_IP=$(jq -r '.public_ip.value // empty' outputs.json)
           SSH_PORT=$(jq -r '.ssh_port.value // "22"' outputs.json)
-          SSH_USER=$(jq -r '.ssh_user.value // "root"' outputs.json)
+          SSH_USER=$(jq -r '.ssh_user.value // "ubuntu"' outputs.json)
+          SSH_PRIVATE_KEY=$(jq -r '.ssh_private_key.value // empty' outputs.json)
 
-          # Mock if: no public_ip output, or it's the RFC 5737 test address
-          if [ -z "$PUBLIC_IP" ] || echo "$PUBLIC_IP" | grep -q "^203\.0\.113\."; then
-            IS_MOCK="true"
+          echo "public_ip=$PUBLIC_IP"   >> $GITHUB_OUTPUT
+          echo "ssh_port=$SSH_PORT"     >> $GITHUB_OUTPUT
+          echo "ssh_user=$SSH_USER"     >> $GITHUB_OUTPUT
+
+          # Write per-env key to disk for bootstrap steps
+          if [ -n "$SSH_PRIVATE_KEY" ]; then
+            mkdir -p ~/.ssh
+            echo "$SSH_PRIVATE_KEY" > ~/.ssh/env_key
+            chmod 600 ~/.ssh/env_key
+            printf 'Host %s\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  IdentityFile ~/.ssh/env_key\n  Port %s\n' \
+              "$PUBLIC_IP" "$SSH_PORT" >> ~/.ssh/config
+            echo "env_key_ready=true" >> $GITHUB_OUTPUT
           else
-            IS_MOCK="false"
+            echo "env_key_ready=false" >> $GITHUB_OUTPUT
           fi
-
-          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
-          echo "ssh_port=$SSH_PORT" >> $GITHUB_OUTPUT
-          echo "is_mock=$IS_MOCK" >> $GITHUB_OUTPUT
-          echo "ssh_user=$SSH_USER" >> $GITHUB_OUTPUT
 
       - name: Upload outputs to control plane
         working-directory: ${{ steps.runtime.outputs.module_path }}
@@ -136,66 +133,30 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
             --data @outputs.json
 
-      - name: Setup SSH key
-        if: steps.outputs.outputs.is_mock == 'false' && steps.runtime.outputs.has_bootstrap == 'true'
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.BOOTSTRAP_SSH_KEY }}" > ~/.ssh/bootstrap_key
-          chmod 600 ~/.ssh/bootstrap_key
-          printf 'Host %s\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  IdentityFile ~/.ssh/bootstrap_key\n  Port %s\n' \
-            "${{ steps.outputs.outputs.public_ip }}" \
-            "${{ steps.outputs.outputs.ssh_port }}" >> ~/.ssh/config
-
-      - name: Install environment SSH key on server
-        if: steps.outputs.outputs.is_mock == 'false' && steps.runtime.outputs.has_bootstrap == 'true'
-        working-directory: ${{ steps.runtime.outputs.module_path }}
-        env:
-          SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/bootstrap_key -p ${{ steps.outputs.outputs.ssh_port }}"
-          TARGET: "${{ steps.outputs.outputs.ssh_user }}@${{ steps.outputs.outputs.public_ip }}"
-        run: |
-          # Extract env public key from outputs (if present)
-          ENV_PUBKEY=$(jq -r '.ssh_public_key.value // empty' outputs.json)
-          if [ -n "$ENV_PUBKEY" ]; then
-            ssh $SSH_OPTS "$TARGET" bash -c "'
-              echo \"$ENV_PUBKEY\" >> ~/.ssh/authorized_keys
-              echo \"Environment SSH key installed\"
-            '"
-            echo "Environment public key added to authorized_keys"
-          else
-            echo "No ssh_public_key in outputs, skipping"
-          fi
-
-      - name: Skip bootstrap (mock IP)
-        if: steps.outputs.outputs.is_mock == 'true'
-        run: |
-          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/event" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
-            -d '{"type":"bootstrap_skipped","message":"Mock IP detected — bootstrap skipped"}'
-
       - name: Wait for SSH
-        if: steps.outputs.outputs.is_mock == 'false' && steps.runtime.outputs.has_bootstrap == 'true'
+        if: steps.outputs.outputs.env_key_ready == 'true' && steps.runtime.outputs.has_bootstrap == 'true'
         run: |
           echo "Waiting for SSH on ${{ steps.outputs.outputs.public_ip }}:${{ steps.outputs.outputs.ssh_port }}..."
-          for i in $(seq 1 24); do
+          for i in $(seq 1 30); do
             if ssh -o ConnectTimeout=5 \
                    -o StrictHostKeyChecking=no \
-                   -i ~/.ssh/bootstrap_key \
+                   -i ~/.ssh/env_key \
                    -p ${{ steps.outputs.outputs.ssh_port }} \
-                   ${{ steps.outputs.outputs.ssh_user }}@${{ steps.outputs.outputs.public_ip }} "echo ok" 2>/dev/null; then
+                   ${{ steps.outputs.outputs.ssh_user }}@${{ steps.outputs.outputs.public_ip }} \
+                   "echo ok" 2>/dev/null; then
               echo "SSH ready after ${i} attempts"
               exit 0
             fi
-            echo "Attempt $i/24, retrying in 5s..."
-            sleep 5
+            echo "Attempt $i/30, retrying in 10s..."
+            sleep 10
           done
           echo "SSH never became ready"; exit 1
 
       - name: Run bootstrap scripts
-        if: steps.outputs.outputs.is_mock == 'false' && steps.runtime.outputs.has_bootstrap == 'true'
+        if: steps.outputs.outputs.env_key_ready == 'true' && steps.runtime.outputs.has_bootstrap == 'true'
         env:
-          SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/bootstrap_key -p ${{ steps.outputs.outputs.ssh_port }}"
-          SCP_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/bootstrap_key -P ${{ steps.outputs.outputs.ssh_port }}"
+          SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/env_key -p ${{ steps.outputs.outputs.ssh_port }}"
+          SCP_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/env_key -P ${{ steps.outputs.outputs.ssh_port }}"
           TARGET: "${{ steps.outputs.outputs.ssh_user }}@${{ steps.outputs.outputs.public_ip }}"
         run: |
           RUNTIME_FILE="templates/${{ inputs.template }}/runtime.json"
@@ -223,41 +184,6 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
             -d '{"type":"bootstrap_complete","message":"All bootstrap scripts executed successfully"}'
 
-      - name: Revoke shared bootstrap key from server
-        if: steps.outputs.outputs.is_mock == 'false' && steps.runtime.outputs.has_bootstrap == 'true'
-        env:
-          SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/bootstrap_key -p ${{ steps.outputs.outputs.ssh_port }}"
-          TARGET: "${{ steps.outputs.outputs.ssh_user }}@${{ steps.outputs.outputs.public_ip }}"
-        run: |
-          # Bootstrap is fully done and the per-environment key is already in
-          # authorized_keys -- remove the shared BOOTSTRAP_SSH_KEY's public key
-          # so a leaked bootstrap key no longer grants access to this node.
-          # The pubkey is derived here on the runner and piped over stdin to a
-          # fixed remote script (passed as the SSH command), rather than
-          # interpolated into a quoted command string, to avoid escaping bugs.
-          #
-          # Non-fatal: the node is otherwise fully provisioned at this point.
-          # Failing the whole job here would leave a working server stuck in
-          # 'dispatching' until reconcileStuckDeployments retries it from
-          # scratch, which is wasteful for what's just a leftover access key.
-          set +e
-          ssh-keygen -y -f ~/.ssh/bootstrap_key > bootstrap_key.pub
-
-          ssh $SSH_OPTS "$TARGET" '
-            BOOTSTRAP_PUBKEY=$(cat)
-            if [ -f ~/.ssh/authorized_keys ]; then
-              grep -vF "$BOOTSTRAP_PUBKEY" ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.tmp || true
-              mv ~/.ssh/authorized_keys.tmp ~/.ssh/authorized_keys
-              chmod 600 ~/.ssh/authorized_keys
-              echo "Bootstrap key revoked from authorized_keys"
-            fi
-          ' < bootstrap_key.pub
-
-          if [ $? -ne 0 ]; then
-            echo "::warning::Failed to revoke shared bootstrap key on ${{ steps.outputs.outputs.public_ip }} -- the node remains reachable with BOOTSTRAP_SSH_KEY until this is cleaned up manually"
-          fi
-          set -e
-
       - name: Complete deployment
         run: |
           curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/complete" \
@@ -271,7 +197,6 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
             -d '{"type":"provision_failed","message":"Workflow failed — check GitHub Actions logs"}'
 
-      # ── Cleanup ───────────────────────────────────────────────────────────────
-      - name: Wipe bootstrap key material
+      - name: Cleanup env key
         if: always()
-        run: rm -f ~/.ssh/bootstrap_key bootstrap_key.pub
+        run: rm -f ~/.ssh/env_key

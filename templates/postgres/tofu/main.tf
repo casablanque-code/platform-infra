@@ -1,113 +1,90 @@
 terraform {
   required_version = ">= 1.6.0"
+  required_providers {
+    incus  = { source = "lxc/incus", version = "~> 1.0" }
+    tls    = { source = "hashicorp/tls", version = "~> 4.0" }
+    random = { source = "hashicorp/random", version = "~> 3.0" }
+  }
+  backend "s3" {}
+}
 
-  backend "s3" {
-    # Injected via -backend-config flags in GitHub Actions workflow
+variable "incus_remote_addr" { type = string }
+variable "incus_token"       { type = string; sensitive = true }
+variable "environment_id"    { type = string }
+variable "environment_name"  { type = string; default = "" }
+variable "image"             { type = string; default = "ubuntu/22.04/cloud" }
+variable "cpu"               { type = number; default = 1 }
+variable "memory_mb"         { type = number; default = 1024 }
+variable "disk_gb"           { type = number; default = 20 }
+variable "pg_version"        { type = string; default = "15" }
+variable "incus_project"     { type = string; default = "default" }
+
+provider "incus" {
+  generate_client_certificates = true
+  accept_remote_certificate    = true
+  remote {
+    name    = "platform"
+    address = var.incus_remote_addr
+    token   = var.incus_token
+  }
+  default_remote = "platform"
+}
+
+resource "tls_private_key" "env_key" {
+  algorithm = "ED25519"
+}
+
+resource "random_password" "db_password" {
+  length  = 24
+  special = false
+}
+
+resource "incus_instance" "node" {
+  name    = "platform-${var.environment_id}"
+  image   = var.image
+  project = var.incus_project
+  running = true
+
+  limits = {
+    cpu    = tostring(var.cpu)
+    memory = "${var.memory_mb}MiB"
+  }
+
+  device {
+    name = "root"
+    type = "disk"
+    properties = {
+      pool = "default"
+      path = "/"
+      size = "${var.disk_gb}GiB"
+    }
+  }
+
+  config = {
+    "cloud-init.user-data" = <<-CLOUDINIT
+      #cloud-config
+      ssh_authorized_keys:
+        - ${trimspace(tls_private_key.env_key.public_key_openssh)}
+      package_update: true
+      packages:
+        - postgresql-${var.pg_version}
+      runcmd:
+        - systemctl enable postgresql
+        - systemctl start postgresql
+        - sudo -u postgres psql -c "ALTER USER postgres PASSWORD '${random_password.db_password.result}';"
+        - sudo -u postgres psql -c "CREATE DATABASE app;"
+    CLOUDINIT
   }
 }
 
-# ── Oracle ─────────────────────────────────────────────────────────────────────
-variable "region" {
-  type    = string
-  default = ""
-}
-
-variable "shape" {
-  type    = string
-  default = ""
-}
-
-# ── Hetzner ────────────────────────────────────────────────────────────────────
-variable "location" {
-  type    = string
-  default = ""
-}
-
-variable "server_type" {
-  type    = string
-  default = ""
-}
-
-# ── AWS ────────────────────────────────────────────────────────────────────────
-variable "instance_type" {
-  type    = string
-  default = ""
-}
-
-# ── Azure ──────────────────────────────────────────────────────────────────────
-variable "vm_size" {
-  type    = string
-  default = ""
-}
-
-# ── GCP ────────────────────────────────────────────────────────────────────────
-variable "machine_type" {
-  type    = string
-  default = ""
-}
-
-# ── Yandex ─────────────────────────────────────────────────────────────────────
-variable "platform_id" {
-  type    = string
-  default = ""
-}
-
-variable "cores" {
-  type    = number
-  default = 2
-}
-
-variable "memory" {
-  type    = number
-  default = 2
-}
-
-# ── Postgres config ────────────────────────────────────────────────────────────
-variable "db_name" {
-  type    = string
-  default = "app"
-}
-
-variable "db_user" {
-  type    = string
-  default = "postgres"
-}
-
-# ── Resolved values ────────────────────────────────────────────────────────────
-locals {
-  resolved_region = coalesce(var.region, var.location, "unknown")
-  mock_password   = "mock-${var.db_name}-${var.db_user}-secret"
-}
-
-# ── Mock outputs ───────────────────────────────────────────────────────────────
-# Replace with real RDS / Cloud SQL / etc when credentials are available.
-
-output "db_host" {
-  value = "postgres.internal"
-}
-
-output "db_port" {
-  value = 5432
-}
-
-output "db_name" {
-  value = var.db_name
-}
-
-output "db_user" {
-  value = var.db_user
-}
-
-output "db_password" {
-  value     = local.mock_password
-  sensitive = true
-}
-
-output "db_url" {
-  value     = "postgresql://${var.db_user}:${local.mock_password}@postgres.internal:5432/${var.db_name}"
-  sensitive = true
-}
-
-output "region" {
-  value = local.resolved_region
-}
+output "public_ip"       { value = incus_instance.node.ipv4_address }
+output "private_ip"      { value = incus_instance.node.ipv4_address }
+output "ssh_user"        { value = "ubuntu" }
+output "ssh_port"        { value = 22 }
+output "ssh_public_key"  { value = tls_private_key.env_key.public_key_openssh }
+output "ssh_private_key" { value = tls_private_key.env_key.private_key_openssh; sensitive = true }
+output "db_user"         { value = "postgres" }
+output "db_name"         { value = "app" }
+output "db_port"         { value = 5432 }
+output "db_password"     { value = random_password.db_password.result; sensitive = true }
+output "instance_name"   { value = incus_instance.node.name }

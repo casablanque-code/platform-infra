@@ -8,30 +8,22 @@ on:
       deployment_id:
         required: true
         type: string
-
       environment_id:
         required: true
         type: string
-
       environment_name:
         required: true
         type: string
-
       provider:
         required: true
         type: string
-
-      region:
-        required: true
-        type: string
-
       template:
         required: true
         type: string
 
 jobs:
   destroy:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, incus-host]
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -45,7 +37,7 @@ jobs:
         with:
           tofu_version: latest
 
-      - name: Notify destroy started
+      - name: Notify started
         run: |
           curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/deployments/${{ inputs.deployment_id }}/event" \
             -H "Content-Type: application/json" \
@@ -55,23 +47,27 @@ jobs:
       - name: Resolve runtime manifest
         id: runtime
         run: |
-          RUNTIME_FILE="templates/${{ inputs.template }}/runtime.json"
-          MODULE_PATH=$(jq -r '.executor.module_path' "$RUNTIME_FILE")
+          MODULE_PATH=$(jq -r '.executor.module_path' "templates/${{ inputs.template }}/runtime.json")
           echo "module_path=$MODULE_PATH" >> $GITHUB_OUTPUT
 
       - name: Generate tfvars
         working-directory: ${{ steps.runtime.outputs.module_path }}
         run: |
-          jq --arg env_id "${{ inputs.environment_id }}" \
-            '.runtime.tfvars + {environment_id: $env_id}' \
+          jq --arg env_id   "${{ inputs.environment_id }}" \
+             --arg env_name "${{ inputs.environment_name }}" \
+             --arg addr     "${{ secrets.INCUS_REMOTE_ADDR }}" \
+             --arg token    "${{ secrets.INCUS_TOKEN }}" \
+            '.runtime.tfvars + {
+               environment_id:    $env_id,
+               environment_name:  $env_name,
+               incus_remote_addr: $addr,
+               incus_token:       $token
+             }' \
             "../../../providers/${{ inputs.provider }}/provider.json" \
             > terraform.tfvars.json
 
       - name: OpenTofu init
         working-directory: ${{ steps.runtime.outputs.module_path }}
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           tofu init \
             -backend-config="bucket=${{ secrets.R2_BUCKET }}" \
@@ -85,9 +81,6 @@ jobs:
 
       - name: OpenTofu destroy
         working-directory: ${{ steps.runtime.outputs.module_path }}
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           tofu destroy -auto-approve
 

@@ -1,115 +1,55 @@
 # platform-infra configuration
-# Copy this file to platform.config.yml and fill in your values.
-# Then run: bash setup.sh
+# 1. Copy to platform.config.yml
+# 2. Fill in your values
+# 3. Run: bash setup.sh
 #
-# platform.config.yml is gitignored — never commit it with real values.
+# platform.config.yml is gitignored — never commit it.
 
-# ── Cloudflare ─────────────────────────────────────────────────────────────────
+# ── Cloudflare ────────────────────────────────────────────────────────────────
+# The control plane runs on Cloudflare Workers (free tier).
 
 cloudflare:
-  # Your Cloudflare account ID (Dashboard → top right)
-  account_id: ""
-
-  # D1 database ID — create with: wrangler d1 create platform_infra
-  d1_database_id: ""
-
-  # R2 bucket name — create with: wrangler r2 bucket create platform-infra-state
+  account_id: ""        # Dashboard → right sidebar
+  d1_database_id: ""    # wrangler d1 create platform_infra
   r2_bucket: "platform-infra-state"
-
-  # R2 endpoint: https://<account_id>.r2.cloudflarestorage.com
-  r2_endpoint: ""
-
-  # R2 API token credentials (Cloudflare Dashboard → R2 → Manage API Tokens)
+  r2_endpoint: ""       # https://<account_id>.r2.cloudflarestorage.com
   r2_access_key_id: ""
   r2_secret_access_key: ""
 
-# ── GitHub ─────────────────────────────────────────────────────────────────────
+# ── GitHub ────────────────────────────────────────────────────────────────────
+# Provisioning runs via GitHub Actions on a self-hosted runner on your
+# Incus server. setup.sh will print the runner registration command.
 
 github:
-  # Your GitHub username or org
-  owner: ""
-
-  # Repository name
+  owner: ""                  # your GitHub username or org
   repo: "platform-infra"
-
-  # Personal Access Token with scopes: repo, workflow
-  # Create at: https://github.com/settings/tokens
-  token: ""
-
-  # Branch to dispatch workflows from
+  token: ""                  # PAT with scopes: repo, workflow
   ref: "main"
 
-# ── Platform secrets ───────────────────────────────────────────────────────────
+# ── Platform secrets ──────────────────────────────────────────────────────────
+# Generate each with: openssl rand -hex 32
 
 secrets:
-  # Random token for internal callbacks (GitHub Actions → Worker)
-  # Generate: openssl rand -hex 32
   callback_token: ""
-
-  # Admin key for platform dashboard (your personal key)
-  # Generate: openssl rand -hex 32
   admin_key: ""
-
-  # AES-256 encryption key for sensitive outputs (ssh keys, db passwords)
-  # Generate: openssl rand -hex 32
   encryption_key: ""
 
-# ── Cloudflare Zero Trust tunnels (cfzt) ────────────────────────────────────────
-# Optional — leave domain blank to skip. Without this, services installed via
-# runtime actions (Portainer, Uptime Kuma, pgAdmin) fall back to whatever
-# direct access the template's firewall rules allow.
+# ── Incus ─────────────────────────────────────────────────────────────────────
+# Your Incus server. The GitHub Actions self-hosted runner must run on this
+# machine (or have direct network access to it).
+#
+# To get the token, run on your Incus server:
+#   incus config trust add --name platform
+
+incus:
+  remote_addr: ""    # e.g. https://192.168.1.10:8443
+  token: ""
+
+# ── Cloudflare Zero Trust tunnels (optional) ──────────────────────────────────
+# Exposes services (Portainer, Uptime Kuma, pgAdmin) without opening firewall
+# ports. Leave domain blank to skip.
 
 cloudflare_tunnel:
-  # API token with: Account / Cloudflare Tunnel / Edit, Zone / DNS / Edit,
-  # Account / Access: Apps and Policies / Edit
-  # Create at: Cloudflare dashboard → My Profile → API Tokens
   api_token: ""
-
-  # Same Cloudflare account ID as the `cloudflare:` section above
-  account_id: ""
-
-  # Domain on Cloudflare that tunnels will be published under
-  # (e.g. "example.com" -> https://portainer.example.com)
-  domain: ""
-
-# ── Providers ──────────────────────────────────────────────────────────────────
-
-providers:
-  # IONOS VPS — existing server (static IP mode, no API provisioning)
-  ionos:
-    enabled: true
-    # Public IP of your existing server
-    static_ip: ""
-    # SSH user on the server
-    ssh_user: "root"
-
-  # Mock gateway — for testing tofu cycle without real cloud
-  mock:
-    enabled: false
-    # URL of infra-mock-gateway (e.g. http://YOUR_IP:8080)
-    gateway_url: ""
-
-  # Hetzner Cloud — real provisioning (coming soon)
-  hetzner:
-    enabled: false
-    token: ""
-    location: "fsn1"
-    server_type: "cx22"
-
-  # Oracle Cloud — real provisioning (coming soon)
-  oracle:
-    enabled: false
-    region: "eu-frankfurt-1"
-    shape: "VM.Standard.E2.1.Micro"
-
-# ── Bootstrap ──────────────────────────────────────────────────────────────────
-
-bootstrap:
-  # ED25519 private key for SSH access to provisioned servers
-  # Generate: ssh-keygen -t ed25519 -f ~/.ssh/platform_bootstrap -N ""
-  # Then add public key to your server's authorized_keys
-  # Value: contents of ~/.ssh/platform_bootstrap (private key)
-  ssh_private_key: |
-    -----BEGIN OPENSSH PRIVATE KEY-----
-    PASTE YOUR PRIVATE KEY HERE
-    -----END OPENSSH PRIVATE KEY-----
+  account_id: ""    # same as cloudflare.account_id
+  domain: ""        # e.g. example.com → https://portainer.example.com

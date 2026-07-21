@@ -6,29 +6,26 @@ on:
       action_id:
         required: true
         type: string
-
-      environment_id:
-        required: true
-        type: string
-
-      environment_name:
-        required: true
-        type: string
-
       action_type:
         required: true
         type: string
-        # reboot | redeploy | run_script
-
+      environment_id:
+        required: true
+        type: string
+      environment_name:
+        required: true
+        type: string
       public_ip:
         required: true
         type: string
-
       ssh_port:
         required: false
         type: string
         default: "22"
-
+      script:
+        required: false
+        type: string
+        default: ""
       params:
         required: false
         type: string
@@ -36,10 +33,7 @@ on:
 
 jobs:
   run-action:
-    runs-on: ubuntu-latest
-    env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    runs-on: [self-hosted, incus-host]
 
     steps:
       - name: Checkout repository
@@ -50,49 +44,37 @@ jobs:
           curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/event" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
-            -d '{"type":"started","message":"Action workflow started"}'
+            -d "{\"type\":\"started\",\"message\":\"Action '${{ inputs.action_type }}' started\"}"
 
-      # ── Mock detection ────────────────────────────────────────────────────────
-      - name: Check if mock IP
-        id: mock
-        run: |
-          IP="${{ inputs.public_ip }}"
-          if echo "$IP" | grep -q "^203\.0\.113\."; then
-            echo "is_mock=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_mock=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Skip action (mock IP)
-        if: steps.mock.outputs.is_mock == 'true'
-        run: |
-          curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/complete?status=skipped" \
-            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}"
-
-      # ── SSH setup ─────────────────────────────────────────────────────────────
-      # Uses the per-environment SSH key (not the shared BOOTSTRAP_SSH_KEY)
-      # so a compromised bootstrap key doesn't grant access to nodes whose
-      # bootstrap key was already rotated out of authorized_keys.
       - name: Fetch environment SSH key
-        if: steps.mock.outputs.is_mock == 'false'
+        id: sshkey
         run: |
+          mkdir -p ~/.ssh
           CREDS=$(curl -sf "${{ secrets.CONTROL_PLANE_URL }}/api/environments/${{ inputs.environment_id }}/ssh-credentials" \
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}")
-          mkdir -p ~/.ssh
+
+          if [ -z "$CREDS" ]; then
+            echo "No SSH credentials found for environment"
+            echo "has_key=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           echo "$CREDS" | jq -r '.ssh_private_key' > ~/.ssh/action_key
           chmod 600 ~/.ssh/action_key
-          SSH_USER=$(echo "$CREDS" | jq -r '.ssh_user // "root"')
-          echo "ssh_user=$SSH_USER" >> $GITHUB_ENV
+
+          SSH_USER=$(echo "$CREDS" | jq -r '.ssh_user // "ubuntu"')
+          echo "ssh_user=$SSH_USER" >> $GITHUB_OUTPUT
+          echo "has_key=true" >> $GITHUB_OUTPUT
+
           printf 'Host %s\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  IdentityFile ~/.ssh/action_key\n  Port %s\n' \
-            "${{ inputs.public_ip }}" \
-            "${{ inputs.ssh_port }}" >> ~/.ssh/config
+            "${{ inputs.public_ip }}" "${{ inputs.ssh_port }}" >> ~/.ssh/config
 
       # ── reboot ────────────────────────────────────────────────────────────────
       - name: Reboot
-        if: steps.mock.outputs.is_mock == 'false' && inputs.action_type == 'reboot'
+        if: inputs.action_type == 'reboot' && steps.sshkey.outputs.has_key == 'true'
         env:
           SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/action_key -p ${{ inputs.ssh_port }}"
-          TARGET: "${{ env.ssh_user }}@${{ inputs.public_ip }}"
+          TARGET: "${{ steps.sshkey.outputs.ssh_user }}@${{ inputs.public_ip }}"
         run: |
           curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/event" \
             -H "Content-Type: application/json" \
@@ -102,21 +84,22 @@ jobs:
 
       # ── run_script ────────────────────────────────────────────────────────────
       - name: Run script
-        if: steps.mock.outputs.is_mock == 'false' && inputs.action_type == 'run_script'
+        if: inputs.action_type == 'run_script' && steps.sshkey.outputs.has_key == 'true'
         env:
           SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/action_key -p ${{ inputs.ssh_port }}"
           SCP_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/action_key -P ${{ inputs.ssh_port }}"
-          TARGET: "${{ env.ssh_user }}@${{ inputs.public_ip }}"
+          TARGET: "${{ steps.sshkey.outputs.ssh_user }}@${{ inputs.public_ip }}"
         run: |
-          RUNTIME_FILE="templates/${{ inputs.action_type }}/runtime.json"
-          SCRIPT=$(echo '${{ inputs.params }}' | jq -r '.script // empty')
+          SCRIPT="${{ inputs.script }}"
           if [ -z "$SCRIPT" ]; then
-            echo "No script specified in params"; exit 1
+            echo "No script specified"; exit 1
           fi
+
           curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/event" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
-            -d "{\"type\":\"running_script\",\"message\":\"Running $SCRIPT\"}"
+            -d "{\"type\":\"running\",\"message\":\"Running $(basename $SCRIPT)\"}"
+
           scp $SCP_OPTS "$SCRIPT" "$TARGET:/tmp/$(basename $SCRIPT)"
           ssh $SSH_OPTS "$TARGET" bash -c "'
             export CONTROL_PLANE_URL=\"${{ secrets.CONTROL_PLANE_URL }}\"
@@ -133,14 +116,12 @@ jobs:
 
       # ── redeploy ──────────────────────────────────────────────────────────────
       - name: Redeploy
-        if: steps.mock.outputs.is_mock == 'false' && inputs.action_type == 'redeploy'
+        if: inputs.action_type == 'redeploy'
         run: |
           curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/environments/${{ inputs.environment_id }}/redeploy" \
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}"
 
-      # ── Complete ──────────────────────────────────────────────────────────────
       - name: Complete action
-        if: steps.mock.outputs.is_mock == 'false'
         run: |
           curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/actions/${{ inputs.action_id }}/complete" \
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}"
@@ -153,9 +134,6 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
             -d '{"type":"failed","message":"Action workflow failed — check GitHub Actions logs"}'
 
-      # ── Cleanup ───────────────────────────────────────────────────────────────
-      # GitHub-hosted runners are ephemeral and torn down after the job anyway,
-      # but wipe the fetched private key explicitly rather than relying on that.
-      - name: Wipe fetched SSH key
+      - name: Wipe SSH key
         if: always()
         run: rm -f ~/.ssh/action_key
