@@ -94,9 +94,28 @@ setup_incus() {
       SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
       log "Installing Incus via apt..."
       $SUDO apt-get update -qq
-      $SUDO apt-get install -y -q incus incus-client
+
+      if ! $SUDO apt-get install -y -q incus incus-client 2>/dev/null; then
+        warn "incus not in default apt repos (common on Ubuntu <24.04) — adding Zabbly repo..."
+        $SUDO mkdir -p /etc/apt/keyrings
+        curl -fsSL https://pkgs.zabbly.com/key.asc | $SUDO gpg --dearmor -o /etc/apt/keyrings/zabbly.gpg
+        . /etc/os-release
+        cat << REPOEOF | $SUDO tee /etc/apt/sources.list.d/zabbly-incus-stable.sources > /dev/null
+Enabled: yes
+Types: deb
+URIs: https://pkgs.zabbly.com/incus/stable
+Suites: ${VERSION_CODENAME}
+Components: main
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/zabbly.gpg
+REPOEOF
+        $SUDO apt-get update -qq
+        $SUDO apt-get install -y -q incus incus-client \
+          || err "Failed to install Incus even after adding the Zabbly repo. Check https://linuxcontainers.org/incus/docs/main/installing/ for your distro."
+      fi
+
       $SUDO usermod -aG incus-admin "$USER" 2>/dev/null || true
-      ok "Incus installed"
+      ok "Incus installed ($(incus --version 2>&1 | head -1))"
     fi
 
     if ! incus info &>/dev/null; then
