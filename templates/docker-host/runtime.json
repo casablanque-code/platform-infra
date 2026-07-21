@@ -1,32 +1,16 @@
 {
   "template_id": "docker-host",
-
-  "executor": {
-    "type": "opentofu",
-    "module_path": "templates/docker-host/tofu"
-  },
-
-  "outputs": [
-    "public_ip",
-    "private_ip",
-    "region",
-    "server_type",
-    "ssh_user",
-    "ssh_port",
-    "ssh_public_key",
-    "ssh_private_key"
-  ],
-
+  "executor": { "type": "opentofu", "module_path": "templates/docker-host/tofu" },
+  "outputs": ["public_ip","private_ip","ssh_user","ssh_port","ssh_public_key","ssh_private_key","instance_name"],
   "post_provision": [
     { "type": "ssh_script", "script": "bootstrap/base.sh" },
     { "type": "ssh_script", "script": "bootstrap/docker.sh" },
     { "type": "ssh_script", "script": "bootstrap/install_cfzt.sh" },
     { "type": "ssh_script", "script": "bootstrap/checkin.sh" }
   ],
-
   "actions": [
-    { "id": "install_portainer",    "label": "Install Portainer",    "script": "bootstrap/install_portainer.sh" },
-    { "id": "install_node_exporter","label": "Install Node Exporter","script": "bootstrap/install_node_exporter.sh" },
-    { "id": "install_uptime_kuma",  "label": "Install Uptime Kuma",  "script": "bootstrap/install_uptime_kuma.sh" }
+    { "id": "install_portainer",     "label": "Install Portainer",     "script": "bootstrap/install_portainer.sh" },
+    { "id": "install_node_exporter", "label": "Install Node Exporter", "script": "bootstrap/install_node_exporter.sh" },
+    { "id": "install_uptime_kuma",   "label": "Install Uptime Kuma",   "script": "bootstrap/install_uptime_kuma.sh" }
   ]
 }

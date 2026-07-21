@@ -1,30 +1,16 @@
 {
   "template_id": "postgres",
-
-  "executor": {
-    "type": "opentofu",
-    "module_path": "templates/postgres/tofu"
-  },
-
-  "outputs": [
-    "db_host",
-    "db_port",
-    "db_name",
-    "db_user",
-    "db_password",
-    "db_url",
-    "region"
-  ],
-
+  "executor": { "type": "opentofu", "module_path": "templates/postgres/tofu" },
+  "outputs": ["public_ip","private_ip","ssh_user","ssh_port","ssh_public_key","ssh_private_key","db_user","db_name","db_port","db_password","instance_name"],
   "post_provision": [
     { "type": "ssh_script", "script": "bootstrap/base.sh" },
     { "type": "ssh_script", "script": "bootstrap/docker.sh" },
     { "type": "ssh_script", "script": "bootstrap/install_cfzt.sh" },
     { "type": "ssh_script", "script": "bootstrap/checkin.sh" }
   ],
-
   "actions": [
-    { "id": "install_pgadmin", "label": "Install pgAdmin", "script": "bootstrap/install_pgadmin.sh" },
-    { "id": "backup_to_r2",   "label": "Backup to R2",   "script": "bootstrap/backup_to_r2.sh" }
+    { "id": "install_pgadmin",       "label": "Install pgAdmin",       "script": "bootstrap/install_pgadmin.sh" },
+    { "id": "install_node_exporter", "label": "Install Node Exporter", "script": "bootstrap/install_node_exporter.sh" },
+    { "id": "backup_to_r2",          "label": "Backup to R2",          "script": "bootstrap/backup_to_r2.sh" }
   ]
 }

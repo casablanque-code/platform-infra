@@ -1,0 +1,11 @@
+{
+  "id": "incus",
+  "name": "Incus",
+  "description": "Local Incus server (LXC containers). Runs on-premise — no cloud account needed.",
+  "runtime": {
+    "tfvars": {
+      "image": "ubuntu/22.04/cloud",
+      "incus_project": "default"
+    }
+  }
+}
