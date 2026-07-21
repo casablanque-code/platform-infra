@@ -1,272 +1,128 @@
 # platform-infra
 
-Self-hosted infrastructure platform for small engineering teams. Provision VMs, bootstrap services, track nodes, run runtime actions — from a web UI. No tickets, no bottlenecks, no SaaS vendor.
+Self-service infrastructure for small teams. One sysadmin sets it up once;
+developers get their own test/dev machines through a web dashboard —
+no more "hey can you spin up a VM for me."
 
 → [Landing](https://platform.casablanque.com) · [Dashboard](https://infra.casablanque.com)
 
 ---
 
-## What it does
+Runs entirely on your own hardware. No cloud account required, no per-minute
+billing, no vendor lock-in.
 
-- **Self-service provisioning** — web UI to create environments on any supported provider. No CLI, no YAML, no Terraform knowledge needed.
-- **Multi-cloud** — IONOS, Hetzner, Oracle, AWS, Azure, GCP, Yandex via provider abstraction. Switch provider with one click.
-- **Auto-lifecycle** — configurable TTL (1h / 6h / 24h / 72h / 7d / ∞), automatic destroy on expiry. No zombie environments.
-- **Post-provision bootstrap** — SSH scripts run after every apply: base hardening, Docker CE, service installs, node registration.
-- **Node inventory** — nodes check in after bootstrap and every 5 minutes. Control plane tracks health, IP, last seen. Self-cleaning: node removes itself when environment is destroyed.
-- **Runtime actions** — reboot, redeploy, run playbooks (Portainer, Node Exporter, Uptime Kuma, pgAdmin, R2 backup) directly from the dashboard.
-- **RBAC** — admin / operator / viewer roles. API keys with expiry. Audit log for all mutations.
-- **Encrypted outputs** — sensitive values (SSH private keys, DB passwords) encrypted with AES-GCM before storing in D1.
-- **Per-environment SSH keys** — unique ED25519 key generated per environment via OpenTofu `tls_private_key`. Shown in dashboard, never stored in plain text.
-- **Mock gateway** — local Go server that emulates a cloud provider API. Test full tofu cycle (create → polling → destroy) without real cloud credentials or costs.
+## What it is
 
----
+- **Control plane** — Cloudflare Workers + D1 + R2 (free tier is enough for
+  small teams). Handles auth, RBAC, environment lifecycle, audit log.
+- **Executor** — GitHub Actions, running on a self-hosted runner on your own
+  infrastructure. Provisions with OpenTofu, configures with shell scripts
+  over SSH.
+- **Dashboard** — a small React app. Create environments, run actions
+  (reboot, install services, backups), see who did what.
+- **Provider** — [Incus](https://linuxcontainers.org/incus/) (LXC containers)
+  today. Proxmox and public cloud are on the roadmap — see below.
 
-## Architecture
+## Requirements
 
-```
-Browser (React dashboard)
-    │
-    ▼
-Cloudflare Workers (control plane API)  ←── cron every minute
-    │                │
-    │                ▼
-    │           Cloudflare D1 (SQLite)
-    │
-    ▼
-GitHub Actions (executor)
-    ├── provision.yml  →  tofu apply  →  bootstrap via SSH  →  /complete
-    ├── destroy.yml    →  tofu destroy  →  /destroy-complete
-    └── action.yml     →  SSH runtime action (reboot / playbook / redeploy)
-
-State: Cloudflare R2 (S3-compatible tofu backend, keyed by environment_id)
-```
-
-**Why GitHub Actions as executor?** Free distributed runner, no agent to maintain, native secrets management, full audit trail.
-
----
-
-## Stack
-
-| Layer | Tech |
-|---|---|
-| Control plane | Cloudflare Workers + Hono |
-| Database | Cloudflare D1 (SQLite) |
-| State backend | Cloudflare R2 |
-| Frontend | React 19 + Tailwind 4 + Vite |
-| IaC | OpenTofu |
-| Executor | GitHub Actions |
-| Bootstrap | Bash (idempotent scripts) |
-
----
+- A Linux server (or VM) for Incus — **needs real KVM/hardware virtualization,
+  not an OpenVZ/container-based VPS**. Check with `systemd-detect-virt` and
+  confirm `/dev/kvm` exists before you start; Incus will not run without it.
+- 2GB+ RAM recommended. It technically starts on less, but you won't have
+  room for more than one or two guest environments.
+- A GitHub repo (fork or clone this one) and a Cloudflare account, both free.
 
 ## Quick start
 
-### Prerequisites
-
-- Cloudflare account (Workers + D1 + R2 — all free tier)
-- GitHub account with Actions enabled
-- `wrangler` CLI: `npx i -g wrangler && wrangler login`
-- `gh` CLI: https://cli.github.com → `gh auth login`
-- `yq`: `brew install yq` or `snap install yq`
-
-### 1. Clone
-
 ```bash
-git clone https://github.com/casablanque-code/platform-infra
+git clone https://github.com/<you>/platform-infra.git
 cd platform-infra
-```
-
-### 2. Create Cloudflare resources
-
-```bash
-# D1 database
-npx wrangler d1 create platform_infra
-# → copy the database_id for the next step
-
-# R2 bucket (for tofu state)
-npx wrangler r2 bucket create platform-infra-state
-# → create R2 API token: Cloudflare Dashboard → R2 → Manage API Tokens
-```
-
-### 3. Configure
-
-```bash
 cp platform.config.example.yml platform.config.yml
-# Edit platform.config.yml — fill in all values
 ```
 
-Key fields:
-| Field | Where to find |
-|---|---|
-| `cloudflare.d1_database_id` | Output of `wrangler d1 create` |
-| `cloudflare.r2_*` | R2 → Manage API Tokens |
-| `github.token` | github.com/settings/tokens (scopes: repo, workflow) |
-| `secrets.*` | Generate with `openssl rand -hex 32` |
-| `bootstrap.ssh_private_key` | `ssh-keygen -t ed25519 -f ~/.ssh/platform_bootstrap -N ""` |
+Edit `platform.config.yml`:
+- `provider.type: incus`
+- Leave `incus.remote_addr` blank if you're running `setup.sh` on the same
+  machine you want Incus on — it'll install and configure Incus for you.
+- Fill in `cloudflare.*` and `github.*` (see comments in the file for exact
+  steps — D1 database, R2 bucket, GitHub PAT).
+- Generate the three `secrets.*` values with `openssl rand -hex 32`.
 
-### 4. Run setup
+Then:
 
 ```bash
-bash setup.sh
+sudo bash setup.sh
 ```
 
-This will:
-- Update `wrangler.jsonc` with your D1 database ID
-- Set all Cloudflare Workers secrets
-- Set all GitHub Actions secrets
-- Update `providers/*.json` with your provider config
-- Apply D1 migrations
-- Build and deploy the Worker
+This deploys the control plane, sets all secrets, and (for Incus) installs
+and configures everything needed on the current machine. At the end it
+prints the command to register your self-hosted GitHub Actions runner —
+run that on the same machine as Incus.
 
-### 5. Open the dashboard
+Open the dashboard URL it gives you, sign in with the admin key, create your
+first environment.
 
-Go to `https://platform-control-plane.workers.dev` and sign in with your `admin_key`.
+## Providers
 
----
+| Provider | Status | Notes |
+|---|---|---|
+| **Incus** | ✅ Working | LXC containers, runs on a single server. First and only fully implemented provider. |
+| **Proxmox** | 🚧 Not implemented | Stub exists in `providers/proxmox/`, see `NOTES.md` there for what's needed. |
+| **Cloud** (Hetzner etc.) | 🚧 Not implemented | Stub exists in `providers/cloud/`, see `NOTES.md` there. |
 
-## Project structure
+`platform.config.yml`'s `provider.type` selects which one `setup.sh` uses.
+Proxmox and cloud currently fail with a clear error pointing at their
+NOTES.md — they were deliberately left as stubs with a defined contract
+(same tfvars/outputs shape as Incus) rather than half-implemented.
 
-```
-platform-infra/
-├── workers/control-plane/
-│   ├── src/index.ts          # Hono API + cron scheduler
-│   ├── migrations/           # D1 schema (0001–0011)
-│   └── wrangler.jsonc        # auto-updated by setup.sh
-├── apps/dashboard/
-│   └── src/App.tsx           # React SPA (served via Workers Assets)
-├── templates/
-│   ├── docker-host/
-│   │   ├── template.json     # UI metadata (name, providers, TTL)
-│   │   ├── runtime.json      # executor config, post_provision, actions
-│   │   └── tofu/main.tf      # OpenTofu module
-│   └── postgres/
-│       └── ...
-├── providers/
-│   ├── ionos/provider.json   # static IP (existing server)
-│   ├── mock/provider.json    # infra-mock-gateway
-│   ├── hetzner/provider.json # tfvars (real provider WIP)
-│   ├── aws/provider.json
-│   ├── azure/provider.json
-│   ├── gcp/provider.json
-│   └── yandex/provider.json
-├── bootstrap/
-│   ├── base.sh               # hardening, fail2ban, ufw
-│   ├── docker.sh             # Docker CE + Compose
-│   ├── checkin.sh            # node registration + self-cleaning cron
-│   ├── install_portainer.sh
-│   ├── install_node_exporter.sh
-│   ├── install_uptime_kuma.sh
-│   ├── install_pgadmin.sh
-│   └── backup_to_r2.sh
-├── infra-mock-gateway/
-│   └── main.go               # mock cloud provider API (Go)
-├── .github/workflows/
-│   ├── provision.yml
-│   ├── destroy.yml
-│   └── action.yml
-├── platform.config.example.yml  # copy → platform.config.yml
-├── setup.sh                      # onboarding script
-└── MOCK_REGISTRY.md              # mock stubs + real provider migration guide
-```
+## Templates
 
----
+- **docker-host** — Ubuntu container, Docker CE + Compose pre-installed.
+  Actions: install Portainer, Uptime Kuma, Node Exporter.
+- **postgres** — Ubuntu container, PostgreSQL pre-installed, DB + user
+  created automatically, credentials saved encrypted in the control plane.
+  Actions: install pgAdmin, Node Exporter, backup to R2.
 
-## Dashboard tabs
+Both are LXC containers on Incus — not full VMs. For most dev/test
+workloads this is indistinguishable in practice (same SSH, same Docker,
+same everything), but keep it in mind if you need kernel-level isolation
+or non-Linux guests.
 
-| Tab | What's there |
-|---|---|
-| Dashboard | Env / deployment / node counters (separate sections), provider grid, recent activity |
-| Environments | Filters, TTL progress bar, node health inline, outputs (decrypted), runtime actions with playbook picker |
-| Deployments | Event timeline per job, retry count, delete |
-| Nodes | Inventory with last seen, delete |
-| Create | Template picker, provider buttons, TTL selector, template inputs |
-| Keys | API key management — admin only |
-| Audit | Mutation log — admin only |
+## Zero Trust access (optional)
 
----
+Services installed via actions (Portainer, Uptime Kuma, pgAdmin) can be
+exposed through [Cloudflare Tunnel](https://github.com/casablanque-code/cfzt)
+instead of opening firewall ports. Fill in `cloudflare_tunnel.*` in
+`platform.config.yml` to enable it — leave `domain` blank to skip.
 
-## RBAC
-
-| Role | Can do |
-|---|---|
-| `admin` | Everything + manage API keys + view audit log |
-| `operator` | Create/destroy environments, run actions, delete deployments/nodes |
-| `viewer` | Read-only access to all resources |
-
-Admin key is set via `wrangler secret put ADMIN_KEY` (or `setup.sh`).
-Operator/viewer keys are created in the dashboard → Keys tab.
-
----
-
-## Environment lifecycle
-
-```
-queued
-  → dispatching
-    → github_actions_started
-    → runtime_resolved
-    → outputs_captured
-    → bootstrap_skipped (mock) | bootstrap_complete (real)
-  → success (running)
-
-running → destroy_queued → dispatching → destroyed
-```
-
-- Failed deployments retry with exponential backoff
-- Stuck deployments (dispatching > 10 min) auto-recovered by cron
-- TTL expiry triggers automatic destroy + node cleanup
-- Node self-removes from inventory when environment is destroyed
-
----
-
-## Mock gateway (for testing)
-
-Test the full tofu cycle without real cloud credentials:
-
-```bash
-# On any Linux server (e.g. your IONOS VPS)
-cd infra-mock-gateway
-go run main.go
-# → http://YOUR_IP:8080/dashboard
-
-# Open port 8080
-sudo ufw allow 8080/tcp
-```
-
-Set in `platform.config.yml`:
-```yaml
-providers:
-  mock:
-    enabled: true
-    gateway_url: "http://YOUR_IP:8080"
-```
-
-See [MOCK_REGISTRY.md](./MOCK_REGISTRY.md) for full details.
-
----
-
-## Connecting a real provider
-
-All providers currently use static IP (IONOS) or mock (gateway). To add a real cloud provider:
-
-1. Write a proper `templates/<template>/tofu/main.tf` with provider resources
-2. Add provider credentials to GitHub Secrets
-3. Add `BOOTSTRAP_SSH_KEY` — private key deployed to VMs via cloud-init
-
-See [MOCK_REGISTRY.md](./MOCK_REGISTRY.md) for per-provider secrets and migration checklist.
-
----
+SSH access for provisioning and actions always goes over your normal
+network path; the tunnel only covers the services themselves.
 
 ## Roadmap
 
-- [ ] Real provider modules — Hetzner first (cx22, ~€3/mo)
-- [x] Zero Trust access — Cloudflare Tunnel via [cfzt](https://github.com/casablanque-code/cfzt); runtime services (Portainer, Uptime Kuma, pgAdmin) are reachable without opening their ports in the firewall. SSH access for provisioning/actions is unaffected.
-- [ ] OPA governance — pre-apply cost/security policies
+- [ ] Proxmox provider
+- [ ] Cloud provider (Hetzner first)
+- [ ] Test coverage — currently none; see `_archive/` for notes on what
+      was here before and why it was removed
+- [ ] Packaged install — today this is git clone + shell script; a single
+      binary or installer script is the goal
 - [ ] Template catalog — K3s, WireGuard, Redis, n8n
-- [ ] Secrets management — per-environment encrypted secrets
-- [ ] Multi-tenancy — project isolation, team RBAC
+- [ ] Per-environment secrets management
+- [ ] Multi-tenancy — project isolation, team RBAC beyond the current
+      admin/operator/viewer roles
 
----
+## Repository layout
+
+```
+workers/control-plane/   Cloudflare Worker — API, auth, D1 schema
+apps/dashboard/           React dashboard
+providers/                One folder per provider: provider.json (+ NOTES.md for stubs)
+templates/                One folder per template: template.json, runtime.json, tofu/
+bootstrap/                 Shell scripts run over SSH after provisioning
+.github/workflows/         provision.yml, destroy.yml, action.yml
+_archive/                  Retired code kept for reference (old cloud provider
+                           stubs, mock gateway) — not part of the running system
+```
 
 ## License
 
