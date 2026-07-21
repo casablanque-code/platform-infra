@@ -5,6 +5,13 @@
 #
 # platform.config.yml is gitignored — never commit it.
 
+# ── Provider ──────────────────────────────────────────────────────────────────
+# Which hypervisor/cloud runs your environments. Only the matching section
+# below needs to be filled in.
+
+provider:
+  type: incus    # incus | proxmox | cloud
+
 # ── Cloudflare ────────────────────────────────────────────────────────────────
 # The control plane runs on Cloudflare Workers (free tier).
 
@@ -17,8 +24,8 @@ cloudflare:
   r2_secret_access_key: ""
 
 # ── GitHub ────────────────────────────────────────────────────────────────────
-# Provisioning runs via GitHub Actions on a self-hosted runner on your
-# Incus server. setup.sh will print the runner registration command.
+# Provisioning runs via GitHub Actions on a self-hosted runner. setup.sh
+# will print the runner registration command for you.
 
 github:
   owner: ""                  # your GitHub username or org
@@ -35,15 +42,39 @@ secrets:
   encryption_key: ""
 
 # ── Incus ─────────────────────────────────────────────────────────────────────
-# Your Incus server. The GitHub Actions self-hosted runner must run on this
-# machine (or have direct network access to it).
+# Used when provider.type == incus.
 #
-# To get the token, run on your Incus server:
+# Leave remote_addr blank to have setup.sh install Incus on THIS machine
+# (the one you're running setup.sh on) and configure everything for you.
+#
+# If you already have Incus running elsewhere, fill in remote_addr and
+# token instead. Get the token with:
 #   incus config trust add --name platform
 
 incus:
-  remote_addr: ""    # e.g. https://192.168.1.10:8443
-  token: ""
+  remote_addr: ""    # blank = auto-install locally. Or e.g. https://192.168.1.10:8443
+  token: ""          # blank = auto-generated during local install
+
+# ── Proxmox ───────────────────────────────────────────────────────────────────
+# Used when provider.type == proxmox.
+# NOT YET IMPLEMENTED — setup.sh will stop with an error if selected.
+# Fill in when support lands; no other changes should be needed.
+
+proxmox:
+  host: ""            # e.g. https://192.168.1.20:8006
+  token_id: ""         # e.g. root@pam!platform
+  token_secret: ""
+  node: ""             # Proxmox node name
+
+# ── Cloud ─────────────────────────────────────────────────────────────────────
+# Used when provider.type == cloud.
+# NOT YET IMPLEMENTED — setup.sh will stop with an error if selected.
+# Fill in when support lands; no other changes should be needed.
+
+cloud:
+  vendor: ""           # e.g. hetzner, aws
+  api_token: ""
+  region: ""
 
 # ── Cloudflare Zero Trust tunnels (optional) ──────────────────────────────────
 # Exposes services (Portainer, Uptime Kuma, pgAdmin) without opening firewall
