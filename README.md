@@ -4,7 +4,7 @@ Self-service infrastructure for small teams. One sysadmin sets it up once;
 developers get their own test/dev machines through a web dashboard —
 no more "hey can you spin up a VM for me."
 
-→ [Landing](https://platform.casablanque.com) · [Dashboard](https://infra.casablanque.com)
+→ [Landing](https://landing.platform.casablanque.com) · [Dashboard](https://platform.casablanque.com)
 
 ---
 
