@@ -1,0 +1,9 @@
+{
+  "id": "proxmox",
+  "name": "Proxmox VE",
+  "description": "Proxmox virtual machines. NOT YET IMPLEMENTED.",
+  "implemented": false,
+  "runtime": {
+    "tfvars": {}
+  }
+}

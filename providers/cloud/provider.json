@@ -1,0 +1,9 @@
+{
+  "id": "cloud",
+  "name": "Cloud",
+  "description": "Public cloud VMs (Hetzner, AWS, etc). NOT YET IMPLEMENTED.",
+  "implemented": false,
+  "runtime": {
+    "tfvars": {}
+  }
+}
