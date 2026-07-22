@@ -69,11 +69,6 @@ resource "incus_instance" "node" {
   project = var.incus_project
   running = true
 
-  limits = {
-    cpu    = tostring(var.cpu)
-    memory = "${var.memory_mb}MiB"
-  }
-
   device {
     name = "root"
     type = "disk"
@@ -85,6 +80,9 @@ resource "incus_instance" "node" {
   }
 
   config = {
+    "limits.cpu"    = tostring(var.cpu)
+    "limits.memory" = "${var.memory_mb}MiB"
+
     "cloud-init.user-data" = <<-CLOUDINIT
       #cloud-config
       ssh_authorized_keys:

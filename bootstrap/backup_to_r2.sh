@@ -80,6 +80,9 @@ log "Enforcing ${RETAIN_DAYS}-day retention for backups/${ENVIRONMENT_ID}/..."
 CUTOFF=$(date -d "${RETAIN_DAYS} days ago" +%Y-%m-%dT%H:%M:%S 2>/dev/null \
   || date -v-${RETAIN_DAYS}d +%Y-%m-%dT%H:%M:%S)   # Linux vs macOS
 
+# SIZE is captured because aws s3 ls output is "DATE TIME SIZE KEY" and read
+# needs a positional slot for it -- only KEY is actually used below.
+# shellcheck disable=SC2034
 AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
 AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
 aws s3 ls "s3://${R2_BUCKET}/backups/${ENVIRONMENT_ID}/" \
