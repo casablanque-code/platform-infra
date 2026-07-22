@@ -86,27 +86,30 @@ export function DashboardTab({
       </div>
 
       {/* Providers */}
-      <div>
-        <SectionLabel>Providers</SectionLabel>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          {allProviders.map(p => {
-            const running = environments.filter(e => e.provider === p && e.status === "running").length;
-            const total   = environments.filter(e => e.provider === p).length;
-            const lost    = nodes.filter(n => n.provider === p && n.status === "unreachable").length;
-            return (
-              <Card key={p} className="p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <p className="font-mono text-sm text-neutral-300">{p}</p>
-                  {lost > 0 && <span className="text-[10px] text-red-400 font-mono">{lost} node lost</span>}
-                </div>
-                <p className="text-xs text-neutral-600">
-                  {running} running{total > running ? ` · ${total - running} other` : ""}
-                </p>
-              </Card>
-            );
-          })}
+      {/* Providers -- only meaningful once there's more than one to compare */}
+      {allProviders.length > 1 && (
+        <div>
+          <SectionLabel>Providers</SectionLabel>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {allProviders.map(p => {
+              const running = environments.filter(e => e.provider === p && e.status === "running").length;
+              const total   = environments.filter(e => e.provider === p).length;
+              const lost    = nodes.filter(n => n.provider === p && n.status === "unreachable").length;
+              return (
+                <Card key={p} className="p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="font-mono text-sm text-neutral-300">{p}</p>
+                    {lost > 0 && <span className="text-[10px] text-red-400 font-mono">{lost} node lost</span>}
+                  </div>
+                  <p className="text-xs text-neutral-600">
+                    {running} running{total > running ? ` · ${total - running} other` : ""}
+                  </p>
+                </Card>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Recent activity */}
       <div>

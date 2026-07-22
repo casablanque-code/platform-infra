@@ -90,11 +90,13 @@ export function CreateTab({ templates, onSuccess }: { templates: PlatformTemplat
                     {t.category}
                   </span>
                 </div>
-                <div className="flex gap-1.5 mt-3">
-                  {t.providers.map(p => (
-                    <span key={p} className="text-[10px] font-mono text-neutral-600 border border-neutral-800 rounded px-2 py-0.5">{p}</span>
-                  ))}
-                </div>
+                {t.providers.length > 1 && (
+                  <div className="flex gap-1.5 mt-3">
+                    {t.providers.map(p => (
+                      <span key={p} className="text-[10px] font-mono text-neutral-600 border border-neutral-800 rounded px-2 py-0.5">{p}</span>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -115,22 +117,24 @@ export function CreateTab({ templates, onSuccess }: { templates: PlatformTemplat
             />
           </div>
 
-          <div>
-            <label className="text-xs text-neutral-600 font-mono block mb-1.5">Provider</label>
-            <div className="flex gap-2 flex-wrap">
-              {(tmpl?.providers ?? []).map(p => (
-                <button
-                  key={p}
-                  onClick={() => setProvider(p)}
-                  className={`px-3 py-2 rounded-lg text-sm font-mono transition-colors ${
-                    provider === p ? "bg-white text-black" : "bg-neutral-900 border border-neutral-800 text-neutral-500 hover:border-neutral-600"
-                  }`}
-                >
-                  {p}
-                </button>
-              ))}
+          {(tmpl?.providers?.length ?? 0) > 1 && (
+            <div>
+              <label className="text-xs text-neutral-600 font-mono block mb-1.5">Provider</label>
+              <div className="flex gap-2 flex-wrap">
+                {(tmpl?.providers ?? []).map(p => (
+                  <button
+                    key={p}
+                    onClick={() => setProvider(p)}
+                    className={`px-3 py-2 rounded-lg text-sm font-mono transition-colors ${
+                      provider === p ? "bg-white text-black" : "bg-neutral-900 border border-neutral-800 text-neutral-500 hover:border-neutral-600"
+                    }`}
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           <div>
             <label className="text-xs text-neutral-600 font-mono block mb-1.5">Lifetime</label>
