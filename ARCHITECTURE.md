@@ -6,6 +6,19 @@ seen this codebase before, read this top to bottom before touching code.
 
 ---
 
+# Design principles
+
+• Control plane never executes infrastructure code
+• Infrastructure is immutable
+• Terraform is the single source of truth
+• Workers own state
+• GitHub Actions own execution
+• Providers are plugins
+• Templates describe products, not infrastructure
+• Every operation is idempotent
+
+---
+
 ## 1. The three roles in this system
 
 Before anything else, separate these three people in your head — the doc
