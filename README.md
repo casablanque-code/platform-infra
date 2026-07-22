@@ -1,5 +1,9 @@
 # platform-infra
 
+[![CI](https://github.com/casablanque-code/platform-infra/actions/workflows/ci.yml/badge.svg)](https://github.com/casablanque-code/platform-infra/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/casablanque-code/platform-infra?label=release)](https://github.com/casablanque-code/platform-infra/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-cbff4d.svg)](LICENSE)
+
 Self-service infrastructure for small teams. One sysadmin sets it up once;
 developers get their own test/dev machines through a web dashboard —
 no more "hey can you spin up a VM for me."
