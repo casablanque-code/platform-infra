@@ -39,7 +39,7 @@ billing, no vendor lock-in.
 ## Quick start
 
 ```bash
-git clone https://github.com/<you>/platform-infra.git
+git clone https://github.com/casablanque-code/platform-infra.git
 cd platform-infra
 cp platform.config.example.yml platform.config.yml
 ```
