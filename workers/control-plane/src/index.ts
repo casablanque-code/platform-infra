@@ -53,6 +53,29 @@ type Node = {
   last_seen_at: string;
 };
 
+type ApiKey = {
+  id: string;
+  name: string;
+  key_hash: string;
+  role: Role;
+  created_at: string;
+  last_used_at: string | null;
+  expires_at: string | null;
+  created_by: string;
+};
+
+type Action = {
+  id: string;
+  environment_id: string;
+  environment_name: string;
+  type: string;
+  status: string;
+  params: string | null;
+  github_run_id: string | null;
+  created_at: string;
+  finished_at: string | null;
+};
+
 const templates: PlatformTemplate[] = [
   {
     id: "docker-host",

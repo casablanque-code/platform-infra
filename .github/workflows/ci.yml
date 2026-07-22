@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'landing/**'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'LICENSE'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'landing/**'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'LICENSE'
+
+jobs:
+  dashboard:
+    name: Dashboard (typecheck + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Typecheck + build
+        run: npm --workspace apps/dashboard run build
+
+  control-plane:
+    name: Control plane (typecheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npm --workspace workers/control-plane exec tsc -- --noEmit
+
+  validate-configs:
+    name: Validate JSON/YAML
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate workflow YAML
+        run: |
+          python3 -c "
+          import yaml, glob, sys
+          errors = []
+          for f in glob.glob('.github/workflows/*.yml'):
+              try:
+                  yaml.safe_load(open(f))
+              except Exception as e:
+                  errors.append(f'{f}: {e}')
+          if errors:
+              for e in errors: print('::error::' + e)
+              sys.exit(1)
+          print(f'All workflow YAML valid ({len(glob.glob(\".github/workflows/*.yml\"))} files)')
+          "
+      - name: Validate template/provider JSON
+        run: |
+          python3 -c "
+          import json, glob, sys
+          errors = []
+          files = glob.glob('templates/**/*.json', recursive=True) + glob.glob('providers/**/*.json', recursive=True)
+          for f in files:
+              try:
+                  json.load(open(f))
+              except Exception as e:
+                  errors.append(f'{f}: {e}')
+          if errors:
+              for e in errors: print('::error::' + e)
+              sys.exit(1)
+          print(f'All JSON valid ({len(files)} files)')
+          "
+
+  shellcheck:
+    name: Shellcheck bootstrap scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: './bootstrap'
+          severity: warning
+
+  tofu-fmt:
+    name: OpenTofu fmt + validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: latest
+      - name: Check formatting
+        run: tofu fmt -check -recursive templates/
+      - name: Validate modules
+        run: |
+          for dir in templates/*/tofu; do
+            echo "─── Validating $dir ───"
+            (cd "$dir" && tofu init -backend=false -input=false && tofu validate)
+          done

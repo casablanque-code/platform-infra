@@ -9,15 +9,39 @@ terraform {
 }
 
 variable "incus_remote_addr" { type = string }
-variable "incus_token"       { type = string; sensitive = true }
-variable "environment_id"    { type = string }
-variable "environment_name"  { type = string; default = "" }
-variable "image"             { type = string; default = "ubuntu/22.04/cloud" }
-variable "cpu"               { type = number; default = 1 }
-variable "memory_mb"         { type = number; default = 1024 }
-variable "disk_gb"           { type = number; default = 20 }
-variable "pg_version"        { type = string; default = "15" }
-variable "incus_project"     { type = string; default = "default" }
+variable "incus_token" {
+  type      = string
+  sensitive = true
+}
+variable "environment_id" { type = string }
+variable "environment_name" {
+  type    = string
+  default = ""
+}
+variable "image" {
+  type    = string
+  default = "ubuntu/22.04/cloud"
+}
+variable "cpu" {
+  type    = number
+  default = 1
+}
+variable "memory_mb" {
+  type    = number
+  default = 1024
+}
+variable "disk_gb" {
+  type    = number
+  default = 20
+}
+variable "pg_version" {
+  type    = string
+  default = "15"
+}
+variable "incus_project" {
+  type    = string
+  default = "default"
+}
 
 provider "incus" {
   generate_client_certificates = true
@@ -77,14 +101,20 @@ resource "incus_instance" "node" {
   }
 }
 
-output "public_ip"       { value = incus_instance.node.ipv4_address }
-output "private_ip"      { value = incus_instance.node.ipv4_address }
-output "ssh_user"        { value = "ubuntu" }
-output "ssh_port"        { value = 22 }
-output "ssh_public_key"  { value = tls_private_key.env_key.public_key_openssh }
-output "ssh_private_key" { value = tls_private_key.env_key.private_key_openssh; sensitive = true }
-output "db_user"         { value = "postgres" }
-output "db_name"         { value = "app" }
-output "db_port"         { value = 5432 }
-output "db_password"     { value = random_password.db_password.result; sensitive = true }
-output "instance_name"   { value = incus_instance.node.name }
+output "public_ip" { value = incus_instance.node.ipv4_address }
+output "private_ip" { value = incus_instance.node.ipv4_address }
+output "ssh_user" { value = "ubuntu" }
+output "ssh_port" { value = 22 }
+output "ssh_public_key" { value = tls_private_key.env_key.public_key_openssh }
+output "ssh_private_key" {
+  value     = tls_private_key.env_key.private_key_openssh
+  sensitive = true
+}
+output "db_user" { value = "postgres" }
+output "db_name" { value = "app" }
+output "db_port" { value = 5432 }
+output "db_password" {
+  value     = random_password.db_password.result
+  sensitive = true
+}
+output "instance_name" { value = incus_instance.node.name }
