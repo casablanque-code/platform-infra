@@ -30,7 +30,22 @@ export function EnvironmentsTab({ environments, nodes, onRefresh }: {
   const [runningAction, setRunningAction]     = useState<Record<string, boolean>>({});
   const [playbookOpen, setPlaybookOpen]       = useState<string | null>(null);
   const [selectedPlaybook, setSelectedPlaybook] = useState<Record<string, string>>({});
+  const [revealed, setRevealed]               = useState<Record<string, boolean>>({});
+  const [copied, setCopied]                   = useState<string | null>(null);
   const dropdownRefs = useRef<Record<string, React.RefObject<HTMLButtonElement | null>>>({});
+
+  // Long/multi-line values (SSH keys) need their own wrapped block, not a
+  // right-aligned inline row. Sensitive ones (private key, DB password) stay
+  // masked until explicitly revealed -- someone glancing at a shared screen
+  // shouldn't see them by default.
+  const SENSITIVE_OUTPUT_KEYS = new Set(["ssh_private_key", "db_password"]);
+  const LONG_OUTPUT_KEYS = new Set(["ssh_private_key", "ssh_public_key", "db_password"]);
+
+  function copyValue(key: string, value: string) {
+    navigator.clipboard.writeText(value);
+    setCopied(key);
+    setTimeout(() => setCopied(prev => (prev === key ? null : prev)), 2000);
+  }
 
   function getDropdownRef(envId: string) {
     if (!dropdownRefs.current[envId]) dropdownRefs.current[envId] = { current: null };
@@ -223,13 +238,50 @@ export function EnvironmentsTab({ environments, nodes, onRefresh }: {
                     ) : (
                       <div>
                         <p className="text-[11px] uppercase tracking-[0.2em] text-neutral-700 font-mono mb-3">Outputs</p>
-                        <div className="space-y-2">
-                          {outputs[env.id].map(o => (
-                            <div key={o.output_key} className="flex items-start justify-between gap-6">
-                              <span className="text-xs text-neutral-600 font-mono">{o.output_key}</span>
-                              <code className="text-xs text-neutral-200 font-mono text-right">{o.output_value.replace(/^"|"$/g, "")}</code>
-                            </div>
-                          ))}
+                        <div className="space-y-3">
+                          {outputs[env.id].map(o => {
+                            const cleanValue = o.output_value.replace(/^"|"$/g, "");
+                            const rowKey = `${env.id}:${o.output_key}`;
+
+                            if (!LONG_OUTPUT_KEYS.has(o.output_key)) {
+                              return (
+                                <div key={o.output_key} className="flex items-start justify-between gap-6">
+                                  <span className="text-xs text-neutral-600 font-mono">{o.output_key}</span>
+                                  <code className="text-xs text-neutral-200 font-mono text-right">{cleanValue}</code>
+                                </div>
+                              );
+                            }
+
+                            const isSensitive = SENSITIVE_OUTPUT_KEYS.has(o.output_key);
+                            const isRevealed = !isSensitive || revealed[rowKey];
+
+                            return (
+                              <div key={o.output_key}>
+                                <div className="flex items-center justify-between gap-3 mb-1.5">
+                                  <span className="text-xs text-neutral-600 font-mono">{o.output_key}</span>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    {isSensitive && (
+                                      <button
+                                        onClick={() => setRevealed(prev => ({ ...prev, [rowKey]: !prev[rowKey] }))}
+                                        className="text-[11px] font-mono text-neutral-600 hover:text-neutral-400 transition-colors"
+                                      >
+                                        {isRevealed ? "hide" : "reveal"}
+                                      </button>
+                                    )}
+                                    <button
+                                      onClick={() => copyValue(rowKey, cleanValue)}
+                                      className="text-[11px] font-mono text-neutral-600 hover:text-neutral-400 transition-colors"
+                                    >
+                                      {copied === rowKey ? "✓" : "copy"}
+                                    </button>
+                                  </div>
+                                </div>
+                                <pre className="text-[11px] text-neutral-200 font-mono bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2.5 whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
+                                  {isRevealed ? cleanValue : "•".repeat(48)}
+                                </pre>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     )}

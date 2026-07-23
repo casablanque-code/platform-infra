@@ -1488,6 +1488,15 @@ app.post("/api/deployments/:id/destroy-complete", async (c) => {
     `DELETE FROM nodes WHERE environment_id = ?`
   ).bind(envId).run();
 
+  // Purge stored outputs (SSH private key, DB password, etc). These were
+  // only ever valid for the now-destroyed machine -- keeping them around
+  // until someone separately hard-deletes the environment record means
+  // encrypted secrets for infrastructure that no longer exists can sit
+  // in D1 indefinitely.
+  await c.env.DB.prepare(
+    `DELETE FROM deployment_outputs WHERE environment_id = ?`
+  ).bind(envId).run();
+
   return c.json({
     ok: true,
     status: "destroyed",
