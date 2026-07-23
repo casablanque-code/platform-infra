@@ -1,0 +1,151 @@
+From cc34d7c63871f391bba70fd62840b5a9afdba713 Mon Sep 17 00:00:00 2001
+From: casablanque-code <andrew@casablanque.dev>
+Date: Thu, 23 Jul 2026 08:18:09 +0000
+Subject: [PATCH] fix: three real bugs from external review
+
+1. Encrypted deployment_outputs (SSH private key, DB password) were only
+   purged on hard-delete of the environment record, not when the actual
+   infrastructure was destroyed (destroy-complete). A destroyed
+   environment's secrets could sit in D1 indefinitely until someone
+   separately deleted the record. Now purged at destroy-complete time,
+   right alongside the existing node-inventory cleanup.
+
+2. EnvironmentsTab rendered every output (including the multi-line SSH
+   private key PEM block) in a compact right-aligned key:value row meant
+   for short scalars -- newlines collapsed, long values overflowed.
+   Long outputs (ssh_private_key, ssh_public_key, db_password) now get
+   their own wrapped <pre> block. Sensitive ones (private key, DB
+   password) are masked behind a reveal toggle with a copy button,
+   matching the pattern already used for freshly-created API keys in
+   KeysTab -- nothing sensitive is shown by default on an expanded card.
+
+3. base.sh still opened ufw port 8080 for 'mock-gateway', a service that
+   was fully removed during the Incus migration. Dead open port for
+   nothing -- removed.
+---
+ .../src/components/EnvironmentsTab.tsx        | 66 +++++++++++++++++--
+ bootstrap/base.sh                             |  1 -
+ workers/control-plane/src/index.ts            |  9 +++
+ 3 files changed, 68 insertions(+), 8 deletions(-)
+
+diff --git a/apps/dashboard/src/components/EnvironmentsTab.tsx b/apps/dashboard/src/components/EnvironmentsTab.tsx
+index 8130f23..a585f75 100644
+--- a/apps/dashboard/src/components/EnvironmentsTab.tsx
++++ b/apps/dashboard/src/components/EnvironmentsTab.tsx
+@@ -30,8 +30,23 @@ export function EnvironmentsTab({ environments, nodes, onRefresh }: {
+   const [runningAction, setRunningAction]     = useState<Record<string, boolean>>({});
+   const [playbookOpen, setPlaybookOpen]       = useState<string | null>(null);
+   const [selectedPlaybook, setSelectedPlaybook] = useState<Record<string, string>>({});
++  const [revealed, setRevealed]               = useState<Record<string, boolean>>({});
++  const [copied, setCopied]                   = useState<string | null>(null);
+   const dropdownRefs = useRef<Record<string, React.RefObject<HTMLButtonElement | null>>>({});
+ 
++  // Long/multi-line values (SSH keys) need their own wrapped block, not a
++  // right-aligned inline row. Sensitive ones (private key, DB password) stay
++  // masked until explicitly revealed -- someone glancing at a shared screen
++  // shouldn't see them by default.
++  const SENSITIVE_OUTPUT_KEYS = new Set(["ssh_private_key", "db_password"]);
++  const LONG_OUTPUT_KEYS = new Set(["ssh_private_key", "ssh_public_key", "db_password"]);
++
++  function copyValue(key: string, value: string) {
++    navigator.clipboard.writeText(value);
++    setCopied(key);
++    setTimeout(() => setCopied(prev => (prev === key ? null : prev)), 2000);
++  }
++
+   function getDropdownRef(envId: string) {
+     if (!dropdownRefs.current[envId]) dropdownRefs.current[envId] = { current: null };
+     return dropdownRefs.current[envId];
+@@ -223,13 +238,50 @@ export function EnvironmentsTab({ environments, nodes, onRefresh }: {
+                     ) : (
+                       <div>
+                         <p className="text-[11px] uppercase tracking-[0.2em] text-neutral-700 font-mono mb-3">Outputs</p>
+-                        <div className="space-y-2">
+-                          {outputs[env.id].map(o => (
+-                            <div key={o.output_key} className="flex items-start justify-between gap-6">
+-                              <span className="text-xs text-neutral-600 font-mono">{o.output_key}</span>
+-                              <code className="text-xs text-neutral-200 font-mono text-right">{o.output_value.replace(/^"|"$/g, "")}</code>
+-                            </div>
+-                          ))}
++                        <div className="space-y-3">
++                          {outputs[env.id].map(o => {
++                            const cleanValue = o.output_value.replace(/^"|"$/g, "");
++                            const rowKey = `${env.id}:${o.output_key}`;
++
++                            if (!LONG_OUTPUT_KEYS.has(o.output_key)) {
++                              return (
++                                <div key={o.output_key} className="flex items-start justify-between gap-6">
++                                  <span className="text-xs text-neutral-600 font-mono">{o.output_key}</span>
++                                  <code className="text-xs text-neutral-200 font-mono text-right">{cleanValue}</code>
++                                </div>
++                              );
++                            }
++
++                            const isSensitive = SENSITIVE_OUTPUT_KEYS.has(o.output_key);
++                            const isRevealed = !isSensitive || revealed[rowKey];
++
++                            return (
++                              <div key={o.output_key}>
++                                <div className="flex items-center justify-between gap-3 mb-1.5">
++                                  <span className="text-xs text-neutral-600 font-mono">{o.output_key}</span>
++                                  <div className="flex items-center gap-2 shrink-0">
++                                    {isSensitive && (
++                                      <button
++                                        onClick={() => setRevealed(prev => ({ ...prev, [rowKey]: !prev[rowKey] }))}
++                                        className="text-[11px] font-mono text-neutral-600 hover:text-neutral-400 transition-colors"
++                                      >
++                                        {isRevealed ? "hide" : "reveal"}
++                                      </button>
++                                    )}
++                                    <button
++                                      onClick={() => copyValue(rowKey, cleanValue)}
++                                      className="text-[11px] font-mono text-neutral-600 hover:text-neutral-400 transition-colors"
++                                    >
++                                      {copied === rowKey ? "✓" : "copy"}
++                                    </button>
++                                  </div>
++                                </div>
++                                <pre className="text-[11px] text-neutral-200 font-mono bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2.5 whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
++                                  {isRevealed ? cleanValue : "•".repeat(48)}
++                                </pre>
++                              </div>
++                            );
++                          })}
+                         </div>
+                       </div>
+                     )}
+diff --git a/bootstrap/base.sh b/bootstrap/base.sh
+index bd4c216..76ffb3d 100644
+--- a/bootstrap/base.sh
++++ b/bootstrap/base.sh
+@@ -28,7 +28,6 @@ sudo ufw --force reset
+ sudo ufw default deny incoming
+ sudo ufw default allow outgoing
+ sudo ufw allow 22/tcp comment 'SSH'
+-sudo ufw allow 8080/tcp comment 'mock-gateway'
+ sudo ufw --force enable
+ 
+ # ── fail2ban ───────────────────────────────────────────────────────────────────
+diff --git a/workers/control-plane/src/index.ts b/workers/control-plane/src/index.ts
+index 5f8d5cf..289dda9 100644
+--- a/workers/control-plane/src/index.ts
++++ b/workers/control-plane/src/index.ts
+@@ -1488,6 +1488,15 @@ app.post("/api/deployments/:id/destroy-complete", async (c) => {
+     `DELETE FROM nodes WHERE environment_id = ?`
+   ).bind(envId).run();
+ 
++  // Purge stored outputs (SSH private key, DB password, etc). These were
++  // only ever valid for the now-destroyed machine -- keeping them around
++  // until someone separately hard-deletes the environment record means
++  // encrypted secrets for infrastructure that no longer exists can sit
++  // in D1 indefinitely.
++  await c.env.DB.prepare(
++    `DELETE FROM deployment_outputs WHERE environment_id = ?`
++  ).bind(envId).run();
++
+   return c.json({
+     ok: true,
+     status: "destroyed",
+-- 
+2.43.0
+
