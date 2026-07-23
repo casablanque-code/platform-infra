@@ -634,13 +634,17 @@ app.post("/api/environments/:id/destroy", requireRole("operator"), async (c) => 
 
   await writeAuditLog(
     c.env.DB, getActor(c), getRole(c),
-    "environment.destroy", "environment", id, "environment.name"
+    "environment.destroy", "environment", id, environment.name as string
   );
 
     // Remove node from inventory — machine will be destroyed
     await c.env.DB.prepare(
       `DELETE FROM nodes WHERE environment_id = ?`
     ).bind(id).run();
+
+  // Same reasoning as environment creation -- don't idle until the next
+  // cron tick for the common case.
+  c.executionCtx.waitUntil(processDeploymentQueue(c.env));
 
   return c.json({
     ok: true,
@@ -650,9 +654,10 @@ app.post("/api/environments/:id/destroy", requireRole("operator"), async (c) => 
 });
 
 // Called by action.yml when action_type == 'redeploy'. Creates a new queued
-// deployment for the environment so processDeploymentQueue picks it up on the
-// next cron tick and re-runs tofu apply. Existing R2 state is reused, so
-// provider resources that haven't changed won't be recreated.
+// deployment for the environment, dispatched immediately (see
+// processDeploymentQueue call below) rather than waiting for the next cron
+// tick, and re-runs tofu apply. Existing R2 state is reused, so provider
+// resources that haven't changed won't be recreated.
 app.post("/api/environments/:id/redeploy", async (c) => {
   const authHeader = c.req.header("Authorization");
   if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
@@ -702,6 +707,8 @@ app.post("/api/environments/:id/redeploy", async (c) => {
     c.env.DB, deploymentId, id,
     "queued", "Redeploy queued from dashboard action"
   );
+
+  c.executionCtx.waitUntil(processDeploymentQueue(c.env));
 
   return c.json({ ok: true, deployment_id: deploymentId });
 });
@@ -800,6 +807,14 @@ app.post("/api/environments", requireRole("operator"), async (c) => {
     "environment.create", "environment", envId, body.name,
     { provider: body.provider, template: body.template }
   );
+
+  // Don't make the common case wait up to a minute for the next cron tick.
+  // processDeploymentQueue() is safe to call concurrently (it locks a single
+  // row via an atomic UPDATE ... WHERE status IN (...) and no-ops if another
+  // caller already took it), so firing it here just moves the queue forward
+  // immediately for the no-backlog case. The cron trigger remains the
+  // safety net for backlog, retries, and anything this call doesn't reach.
+  c.executionCtx.waitUntil(processDeploymentQueue(c.env));
 
   return c.json({
     environment_id: envId,

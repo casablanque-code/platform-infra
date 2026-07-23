@@ -35,6 +35,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Configure OpenTofu plugin cache
+        run: |
+          mkdir -p "$HOME/.tofu-plugin-cache"
+          echo "TF_PLUGIN_CACHE_DIR=$HOME/.tofu-plugin-cache" >> "$GITHUB_ENV"
+
       - name: Install OpenTofu
         uses: opentofu/setup-opentofu@v1
         with:
