@@ -389,3 +389,247 @@ you fill in ──▶ platform.config.yml ──▶ setup.sh (once) ──▶ co
                                               ▼
                                    runner: tofu destroy ──▶ gone
 ```
+
+---
+
+## 9. Sources of truth
+
+Three things describe "what exists" and they are not the same thing:
+
+| | What it actually tracks | Who can change it |
+|---|---|---|
+| **D1** (`environments` table) | Lifecycle/desired state: what the platform believes should exist, and what state it should be in (`queued`, `running`, `destroy_queued`, `destroyed`...) | The control plane API, in response to user actions and cron |
+| **Terraform state** (in R2, per environment) | The last configuration OpenTofu successfully applied for that environment | `tofu apply` / `tofu destroy`, run by the self-hosted runner |
+| **Incus** | Physical reality — what containers actually exist on the host right now | Anything with access to the Incus API, including a human running `incus delete` by hand |
+
+In normal operation these three agree. They can drift: `tofu destroy` can
+fail partway through and leave a container running while D1 already
+says `destroyed`; someone can `incus delete` a container directly,
+leaving D1 saying `running` for something that no longer exists;
+`tofu apply` can partially succeed and leave Terraform state
+inconsistent with either D1 or Incus.
+
+The control plane cannot check Incus directly — a Cloudflare Worker has
+no network path to a server on your LAN. Only the self-hosted runner
+does. This is why the reconciler (below) is a scheduled *workflow*, not
+Worker code: it's the only thing physically positioned to compare D1
+against Incus.
+
+---
+
+## 10. Reconciler
+
+`.github/workflows/reconcile.yml` runs hourly on the self-hosted runner
+(and on demand via `workflow_dispatch`). It lists actual Incus instances
+and posts them to `POST /api/reconcile`, which compares that list
+against every D1 environment with `status = 'running'` and flags two
+kinds of drift:
+
+- **Orphaned in Incus** — an instance named `platform-*` exists on the
+  host with no corresponding `running` environment in D1. Something is
+  consuming resources that the platform has lost track of.
+- **Orphaned in D1** — an environment D1 believes is `running` has no
+  matching Incus instance. The platform thinks something exists that
+  doesn't.
+
+Each run is stored (`reconcile_runs` table) and each individual finding
+is written to the audit log. The dashboard shows a warning card when the
+latest run found anything.
+
+This is deliberately **detection only**. It does not delete anything on
+either side automatically. An orphaned container might be something a
+developer is deliberately debugging outside the platform's normal flow;
+auto-deleting it because the platform doesn't recognize it is a good way
+to destroy someone's work. A human reviews findings and decides.
+
+Transient states (`queued`, `dispatching`, `destroy_queued`) are
+excluded from comparison on purpose — an environment mid-provision or
+mid-destroy is *expected* to briefly disagree with Incus, and that's not
+a finding.
+
+---
+
+## 11. Failure modes
+
+What actually happens, traced through the real code, not aspirational:
+
+**The self-hosted runner dies mid-job.** GitHub Actions marks the run as
+failed after its own timeout. The deployment's status stays wherever it
+was (typically `dispatching`) with no `complete` callback ever arriving.
+`reconcileStuckDeployments()` (part of the per-minute cron) finds
+deployments stuck in `dispatching` past a timeout and requeues them with
+`retry_count` incremented, using `original_status` to know whether it
+was a provision or a destroy so it re-dispatches the right workflow.
+This is the same mechanism that recovers from...
+
+**A `workflow_dispatch` call to GitHub's API fails** (rate limited,
+transient network error, etc). The dispatch function checks
+`response.ok` and, on failure, logs a `dispatch_failed` deployment event
+and returns an error — the deployment is left in whatever state it was
+before dispatch, generally still `queued`, and gets picked up again by
+the next cron tick or the next `waitUntil()`-triggered dispatch from any
+subsequent API call. Not instant, but not lost.
+
+**GitHub itself is unavailable.** Nothing dispatches until it recovers.
+D1 state doesn't corrupt — deployments just sit `queued` longer than
+usual. No special handling needed; the existing retry path covers it
+once GitHub is back.
+
+**`tofu apply` / `tofu destroy` crashes or errors.** The GitHub Actions
+step fails, the workflow's `Notify failure` step posts a
+`provision_failed` / `destroy_failed` event, and the deployment is left
+for `reconcileStuckDeployments()` to retry (up to a retry limit — after
+that it's marked permanently failed, see step ⑬ /
+`reconcileStuckDeployments`'s `original_status`-based branch for
+correctly marking a failed *destroy* as `destroyed` rather than
+`failed`, since the resource may already be gone even if the OpenTofu
+run itself errored).
+
+**SSH is unreachable after provisioning.** `Wait for SSH` retries for a
+bounded number of attempts (currently 30 × 10s) before failing the job —
+same recovery path as any other provision failure.
+
+**Bootstrap partially fails** (one script in the chain errors). The
+`Run bootstrap scripts` step fails outright — there's no per-script
+partial-success state. On retry, every script in the chain runs again
+from the top. This is exactly why bootstrap idempotency (§13) isn't
+optional: a partial failure followed by a full retry means every script,
+including ones that already succeeded, will run at least twice in
+practice.
+
+**The runner's callback to the control plane never arrives** (network
+blip between runner and Cloudflare, callback endpoint down, etc). Same
+as the dispatch-failure case — the deployment doesn't reach `complete`,
+stays in `dispatching`, gets caught and retried by
+`reconcileStuckDeployments()`.
+
+**Known gap:** `reconcileStuckDeployments()`'s recovery path has not yet
+been exercised against a real failure on real infrastructure — it's
+verified by code inspection, not by observed behavior in production. If
+you hit a stuck deployment that doesn't recover as described here,
+that's a real bug report, not expected behavior.
+
+---
+
+## 12. Why Cloudflare
+
+The alternative most people reach for is "a small Go/Node server plus
+Postgres, running in a Docker container somewhere." That's a perfectly
+reasonable choice too. Cloudflare was picked for this project
+specifically because:
+
+- **Workers** run the control plane with zero servers to patch, scale,
+  or keep alive. For a small team's usage volume, the free tier doesn't
+  get close to being a real constraint.
+- **D1** is SQLite at the edge — enough for this project's access
+  patterns (a handful of tables, low write volume, no complex joins at
+  scale) without running a separate database service.
+- **R2** stores Terraform state with S3-compatible APIs (so OpenTofu's
+  `s3` backend works against it unmodified) and no egress fees.
+- Nothing in this stack requires you, the installer, to provision or
+  maintain a server just to run the control plane — the only server you
+  need is the one Incus itself runs on, which you needed anyway.
+
+The tradeoff: you're on Cloudflare's platform and its specific
+primitives (D1's SQLite dialect, Workers' execution model — no long-lived
+background processes, hence the cron-based queue instead of something
+like a persistent worker pool). If you'd rather self-host the control
+plane too, that's a valid fork — nothing about the *rest* of the
+architecture (Incus, OpenTofu, GitHub Actions runners, bootstrap
+scripts) depends on Cloudflare specifically.
+
+---
+
+## 13. Architecture decisions
+
+**Why GitHub Actions instead of a dedicated job queue (Nomad, etc)?**
+GitHub Actions already gives you a queue, an executor, and log storage
+for free, and self-hosted runners mean the executor runs on your own
+infrastructure with no additional service to operate. The cost: GitHub
+Actions' API has real (if generous) rate limits, and a self-hosted
+runner is a single point of failure until you run more than one (§14).
+For a small team's provisioning volume this tradeoff favors simplicity.
+
+**Why D1 instead of Postgres?** D1 requires no separate database service
+to run or connect to — it's bound to the Worker directly. The project's
+actual data model (a handful of tables, no heavy relational querying)
+doesn't need what Postgres offers over SQLite. If usage ever demands
+real concurrent write throughput or complex queries, that's a real
+reason to reconsider — not a decision made lightly, but not the current
+bottleneck either.
+
+**Why OpenTofu instead of Terraform?** License. OpenTofu is the
+Linux-Foundation-governed fork, MIT-licensed, drop-in compatible with
+existing `.tf` files and the CLI you already know. No functional
+tradeoff for this project's purposes.
+
+**Why Incus?** It needed to run on modest, ordinary hardware — a single
+server, not a cluster — with no cloud account and no licensing cost.
+Incus (the LXC/LXD successor maintained under the Linux Containers
+project) provisions in seconds, supports cloud-init for SSH key
+injection the same way cloud providers do, and its Terraform provider is
+actively maintained. Proxmox was considered and is still on the roadmap
+for genuine VM-level isolation; Incus was chosen first because
+containers are enough for the primary use case (short-lived dev/test
+environments) and the resource overhead is dramatically lower.
+
+**Why API keys instead of OAuth?** This platform is meant to be
+installed and run by a single small team, not federated across
+organizations. API keys are the entire auth mechanism a small team
+actually needs — no identity provider to stand up, no OAuth app to
+register, no token refresh flow to implement on either side. If
+multi-tenancy or SSO becomes a real requirement, that's a substantial
+enough change to warrant its own design, not a bolt-on.
+
+---
+
+## 14. Scaling past one runner
+
+Right now, one self-hosted runner labelled `incus-host` is a single
+point of failure — if that machine or its runner process is down,
+nothing provisions, destroys, or runs actions until it's back.
+
+The tempting fix — register a second runner with the same `incus-host`
+label — **does not work correctly** unless both machines share the same
+Incus instance and storage. GitHub distributes jobs across runners
+sharing a label with no guarantee of *which* one picks up a given job.
+An environment provisioned on host A has its container, its SSH access,
+and its Incus context entirely on host A — if a later action (reboot,
+redeploy, destroy) for that same environment gets picked up by runner B
+instead, it fails outright: the container doesn't exist there.
+
+The correct design, when this is actually needed:
+
+1. Give each host its own unique label (`incus-host-a`, `incus-host-b`,
+   ...) instead of sharing one.
+2. Store which host an environment was provisioned on (a new column on
+   `environments`, e.g. `runner_label`).
+3. `provision.yml`/`destroy.yml`/`action.yml` dispatch calls target that
+   specific label for any operation on an existing environment, and pick
+   a host (round-robin, least-loaded, whatever) only for brand new
+   provisions.
+
+This gets you horizontal scaling for provisioning *throughput* across
+multiple physical hosts, while keeping every environment's full
+lifecycle pinned to the host it actually lives on. Not implemented —
+documented here so a naive "just add a second runner with the same
+label" attempt doesn't silently corrupt environment access later.
+
+---
+
+## 15. Bootstrap scripts must be idempotent — no exceptions
+
+Stated as a hard rule, not a preference: **every script in a template's
+`post_provision` chain must be safe to run any number of times in a
+row, in full, with no side effects beyond the first successful run.**
+
+This isn't a nice-to-have. §11 (Failure modes) shows why: a partial
+bootstrap failure means the *entire* chain re-runs on retry, not just
+the script that failed. `base.sh`, `docker.sh`, `checkin.sh`, and
+`install_cfzt.sh` all currently meet this bar (checked directly against
+their `command -v` / `systemctl is-active` guards and, for `checkin.sh`,
+deliberate dedup of its own cron entry before re-adding it). Any new
+bootstrap or action script must meet it too before merging — `apt-get
+install` and similar naturally-idempotent commands are fine as-is; a
+script that appends to a file, creates a resource without checking it
+exists, or generates a fresh secret every run is not.
