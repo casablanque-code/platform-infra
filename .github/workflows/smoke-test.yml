@@ -1,0 +1,181 @@
+name: Smoke Test (Incus)
+
+# Provisions a real container against a real (throwaway, local-to-the-runner)
+# Incus instance, on a GitHub-hosted runner -- no self-hosted infrastructure
+# needed. This is NOT a test of provision.yml itself (that requires the
+# self-hosted 'incus-host' runner and can't run here), it's a direct test of
+# the part most likely to have real bugs: the Terraform module's schema, the
+# cloud-init SSH key injection, and the bootstrap scripts actually working
+# against a real Incus container. The dispatch plumbing in provision.yml is
+# comparatively simple curl calls and lower risk; this covers what isn't.
+#
+# No secrets required -- uses local Terraform state (tofu init -backend=false)
+# and a fresh Incus install on the runner itself. Safe to run on PRs from
+# forks.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'templates/**'
+      - 'providers/incus/**'
+      - 'bootstrap/base.sh'
+      - 'bootstrap/docker.sh'
+      - '.github/workflows/smoke-test.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'templates/**'
+      - 'providers/incus/**'
+      - 'bootstrap/base.sh'
+      - 'bootstrap/docker.sh'
+      - '.github/workflows/smoke-test.yml'
+  workflow_dispatch: {}
+
+jobs:
+  smoke-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        template: [docker-host, postgres]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: latest
+
+      - name: Install Incus
+        run: |
+          if ! apt-cache show incus &>/dev/null; then
+            echo "incus not in default apt repos -- adding Zabbly repo"
+            sudo mkdir -p /etc/apt/keyrings
+            curl -fsSL https://pkgs.zabbly.com/key.asc | sudo gpg --dearmor -o /etc/apt/keyrings/zabbly.gpg
+            . /etc/os-release
+            printf 'Enabled: yes\nTypes: deb\nURIs: https://pkgs.zabbly.com/incus/stable\nSuites: %s\nComponents: main\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/zabbly.gpg\n' \
+              "$VERSION_CODENAME" "$(dpkg --print-architecture)" \
+              | sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.sources > /dev/null
+            sudo apt-get update -qq
+          fi
+          sudo apt-get install -y -q incus incus-client
+          incus --version
+
+      - name: Initialize Incus
+        run: |
+          sudo incus admin init --minimal
+          sudo incus config set core.https_address ":8443"
+          TOKEN=$(sudo incus config trust add --name smoke-test --quiet)
+          echo "INCUS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          # Runner user needs incus-admin group membership to use the CLI
+          # without sudo for the rest of the job
+          sudo usermod -aG incus-admin "$USER"
+
+      - name: Generate tfvars
+        working-directory: templates/${{ matrix.template }}/tofu
+        run: |
+          jq --arg env_id "smoketest-${{ github.run_id }}-${{ matrix.template }}" \
+             --arg addr "https://127.0.0.1:8443" \
+             --arg token "$INCUS_TOKEN" \
+            '.runtime.tfvars + {
+               environment_id:    $env_id,
+               environment_name:  $env_id,
+               incus_remote_addr: $addr,
+               incus_token:       $token
+             }' \
+            "../../../providers/incus/provider.json" \
+            > terraform.tfvars.json
+          jq 'del(.incus_token)' terraform.tfvars.json
+
+      - name: tofu init (local state, no R2 needed)
+        working-directory: templates/${{ matrix.template }}/tofu
+        run: sg incus-admin -c "tofu init -backend=false -input=false"
+
+      - name: tofu apply
+        working-directory: templates/${{ matrix.template }}/tofu
+        run: sg incus-admin -c "tofu apply -auto-approve"
+
+      - name: Capture outputs
+        id: outputs
+        working-directory: templates/${{ matrix.template }}/tofu
+        run: |
+          sg incus-admin -c "tofu output -json" > outputs.json
+
+          PUBLIC_IP=$(jq -r '.public_ip.value // empty' outputs.json)
+          SSH_USER=$(jq -r '.ssh_user.value // "ubuntu"' outputs.json)
+          SSH_PORT=$(jq -r '.ssh_port.value // "22"' outputs.json)
+
+          if [ -z "$PUBLIC_IP" ]; then
+            echo "::error::No public_ip in tofu output -- module didn't produce an IP"
+            exit 1
+          fi
+
+          mkdir -p ~/.ssh
+          jq -r '.ssh_private_key.value' outputs.json > ~/.ssh/smoke_key
+          chmod 600 ~/.ssh/smoke_key
+
+          echo "public_ip=$PUBLIC_IP" >> "$GITHUB_OUTPUT"
+          echo "ssh_user=$SSH_USER" >> "$GITHUB_OUTPUT"
+          echo "ssh_port=$SSH_PORT" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for SSH
+        run: |
+          for i in $(seq 1 30); do
+            if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
+                   -i ~/.ssh/smoke_key -p ${{ steps.outputs.outputs.ssh_port }} \
+                   ${{ steps.outputs.outputs.ssh_user }}@${{ steps.outputs.outputs.public_ip }} \
+                   "echo ok" 2>/dev/null; then
+              echo "SSH ready after ${i} attempts"
+              exit 0
+            fi
+            echo "Attempt $i/30, retrying in 10s..."
+            sleep 10
+          done
+          echo "::error::SSH never became ready"; exit 1
+
+      - name: Run bootstrap (base.sh + docker.sh only)
+        env:
+          SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/smoke_key -p ${{ steps.outputs.outputs.ssh_port }}"
+          SCP_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/smoke_key -P ${{ steps.outputs.outputs.ssh_port }}"
+          TARGET: "${{ steps.outputs.outputs.ssh_user }}@${{ steps.outputs.outputs.public_ip }}"
+        run: |
+          # checkin.sh and install_cfzt.sh both need real platform config
+          # (control plane URL, cfzt credentials) that doesn't exist in this
+          # throwaway job -- base.sh and docker.sh are the two scripts that
+          # actually exercise infrastructure-level correctness (hardening,
+          # Docker install), which is what this test is for.
+          for SCRIPT in bootstrap/base.sh bootstrap/docker.sh; do
+            echo "─── Running $SCRIPT ───"
+            scp $SCP_OPTS "$SCRIPT" "$TARGET:/tmp/$(basename $SCRIPT)"
+            ssh $SSH_OPTS "$TARGET" "chmod +x /tmp/$(basename $SCRIPT) && /tmp/$(basename $SCRIPT)"
+            echo "─── $SCRIPT done ───"
+          done
+
+      - name: Verify Docker actually works
+        env:
+          SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/smoke_key -p ${{ steps.outputs.outputs.ssh_port }}"
+          TARGET: "${{ steps.outputs.outputs.ssh_user }}@${{ steps.outputs.outputs.public_ip }}"
+        run: |
+          ssh $SSH_OPTS "$TARGET" "sudo docker run --rm hello-world" | grep -q "Hello from Docker" \
+            && echo "Docker works" \
+            || (echo "::error::Docker did not run hello-world successfully"; exit 1)
+
+      - name: Verify PostgreSQL actually works
+        if: matrix.template == 'postgres'
+        working-directory: templates/postgres/tofu
+        env:
+          SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/smoke_key -p ${{ steps.outputs.outputs.ssh_port }}"
+          TARGET: "${{ steps.outputs.outputs.ssh_user }}@${{ steps.outputs.outputs.public_ip }}"
+        run: |
+          DB_PASSWORD=$(sg incus-admin -c "tofu output -raw db_password")
+          ssh $SSH_OPTS "$TARGET" \
+            "PGPASSWORD='$DB_PASSWORD' psql -h localhost -U postgres -d app -c 'SELECT 1;'" \
+            && echo "PostgreSQL reachable and query succeeded" \
+            || (echo "::error::Could not connect to PostgreSQL with the tofu-output credentials"; exit 1)
+
+      - name: tofu destroy
+        if: always()
+        working-directory: templates/${{ matrix.template }}/tofu
+        run: sg incus-admin -c "tofu destroy -auto-approve" || echo "::warning::destroy failed -- runner VM is ephemeral and will be discarded regardless"
