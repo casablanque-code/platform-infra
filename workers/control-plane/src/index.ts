@@ -138,7 +138,7 @@ async function hashKey(key: string): Promise<string> {
 async function writeAuditLog(
   db: D1Database,
   actor: string,
-  actorRole: Role,
+  actorRole: string,
   action: string,
   resourceType: string,
   resourceId?: string,
@@ -1888,6 +1888,92 @@ async function reconcileNodeHealth(env: Env) {
     recovered: recovered.results.length,
   };
 }
+
+// Called by reconcile.yml on the self-hosted runner (the only thing that
+// can actually reach the Incus API) with the current instance list. D1
+// (lifecycle state), Terraform state (last-applied config), and Incus
+// itself (physical reality) can independently drift -- this catches D1 vs
+// Incus mismatches specifically. Detection only: no automatic deletion of
+// anything. Findings are stored for the dashboard and written to the
+// audit log; a human decides what to do about them.
+app.post("/api/reconcile", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!isAuthorized(authHeader, c.env.CALLBACK_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const body = await c.req.json<{ instances: { name: string; status: string }[] }>();
+  const incusInstances = body.instances ?? [];
+
+  // Only environments in a stable state are worth comparing -- transient
+  // states (provisioning/dispatching/destroy_queued) are expected to
+  // mismatch Incus briefly and aren't a real finding.
+  const { results: liveEnvironments } = await c.env.DB.prepare(`
+    SELECT id, name FROM environments WHERE status = 'running'
+  `).all<{ id: string; name: string }>();
+
+  const expectedNames = new Set(liveEnvironments.map(e => `platform-${e.id}`));
+  const actualNames = new Set(incusInstances.map(i => i.name));
+
+  const orphanedInIncus = incusInstances
+    .filter(i => i.name.startsWith("platform-") && !expectedNames.has(i.name))
+    .map(i => ({ name: i.name, status: i.status }));
+
+  const orphanedInD1 = liveEnvironments
+    .filter(e => !actualNames.has(`platform-${e.id}`))
+    .map(e => ({ environment_id: e.id, name: e.name }));
+
+  const now = new Date().toISOString();
+  const runId = crypto.randomUUID();
+
+  await c.env.DB.prepare(`
+    INSERT INTO reconcile_runs (id, ran_at, incus_instance_count, orphaned_in_incus, orphaned_in_d1, ok)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(
+    runId, now, incusInstances.length,
+    JSON.stringify(orphanedInIncus), JSON.stringify(orphanedInD1),
+    (orphanedInIncus.length === 0 && orphanedInD1.length === 0) ? 1 : 0
+  ).run();
+
+  for (const o of orphanedInIncus) {
+    await writeAuditLog(
+      c.env.DB, "reconciler", "system",
+      "reconcile.orphaned_in_incus", "instance", undefined, o.name,
+      { status: o.status }
+    );
+  }
+  for (const o of orphanedInD1) {
+    await writeAuditLog(
+      c.env.DB, "reconciler", "system",
+      "reconcile.orphaned_in_d1", "environment", o.environment_id, o.name,
+      {}
+    );
+  }
+
+  return c.json({
+    ok: orphanedInIncus.length === 0 && orphanedInD1.length === 0,
+    orphaned_in_incus: orphanedInIncus,
+    orphaned_in_d1: orphanedInD1,
+  });
+});
+
+app.get("/api/reconcile/latest", requireRole("viewer"), async (c) => {
+  const row = await c.env.DB.prepare(`
+    SELECT * FROM reconcile_runs ORDER BY ran_at DESC LIMIT 1
+  `).first<{
+    id: string; ran_at: string; incus_instance_count: number;
+    orphaned_in_incus: string; orphaned_in_d1: string; ok: number;
+  }>();
+
+  if (!row) return c.json({ ran_at: null, ok: true, orphaned_in_incus: [], orphaned_in_d1: [] });
+
+  return c.json({
+    ran_at: row.ran_at,
+    ok: row.ok === 1,
+    orphaned_in_incus: JSON.parse(row.orphaned_in_incus),
+    orphaned_in_d1: JSON.parse(row.orphaned_in_d1),
+  });
+});
 
 // Used by bootstrap/checkin.sh's self-cleaning cron job to detect whether
 // its environment still exists, without needing viewer/operator credentials

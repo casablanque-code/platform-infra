@@ -1,5 +1,7 @@
-import type { Environment, Deployment, InfraNode, PlatformTemplate, Tab } from "../types";
+import { useEffect, useState } from "react";
+import type { Environment, Deployment, InfraNode, PlatformTemplate, Tab, ReconcileStatus } from "../types";
 import { Card, SectionLabel, EmptyState, StatusPill, timeAgo } from "./ui";
+import { useAuthFetch } from "../api";
 
 export function DashboardTab({
   environments, deployments, nodes, templates, onNavigate,
@@ -10,6 +12,13 @@ export function DashboardTab({
   templates: PlatformTemplate[];
   onNavigate: (tab: Tab) => void;
 }) {
+  const authFetch = useAuthFetch();
+  const [reconcile, setReconcile] = useState<ReconcileStatus | null>(null);
+
+  useEffect(() => {
+    authFetch<ReconcileStatus>("/api/reconcile/latest").then(setReconcile).catch(() => {});
+  }, []);
+
   const envStats = {
     active: environments.filter(e => e.status === "running").length,
     queued: environments.filter(e => ["queued", "dispatching"].includes(e.status)).length,
@@ -34,6 +43,24 @@ export function DashboardTab({
 
   return (
     <div className="space-y-8">
+
+      {reconcile && !reconcile.ok && (
+        <Card className="p-5 border-amber-900/50 bg-amber-950/10">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[11px] uppercase tracking-wider text-amber-500 font-mono">⚠ Reconcile found drift</p>
+            <span className="text-[11px] text-neutral-600 font-mono">{reconcile.ran_at && timeAgo(reconcile.ran_at)}</span>
+          </div>
+          <div className="text-xs text-neutral-400 space-y-1">
+            {reconcile.orphaned_in_incus.length > 0 && (
+              <p>{reconcile.orphaned_in_incus.length} instance(s) running on Incus with no matching environment in the platform.</p>
+            )}
+            {reconcile.orphaned_in_d1.length > 0 && (
+              <p>{reconcile.orphaned_in_d1.length} environment(s) marked running with no matching Incus instance.</p>
+            )}
+          </div>
+          <p className="text-[11px] text-neutral-600 mt-2">Nothing was deleted automatically — check the audit log and resolve manually.</p>
+        </Card>
+      )}
 
       {/* Environments */}
       <div>

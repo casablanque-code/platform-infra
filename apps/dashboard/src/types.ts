@@ -99,3 +99,10 @@ export type PlatformTemplate = {
 };
 
 export type Tab = "dashboard" | "environments" | "deployments" | "nodes" | "create" | "keys" | "audit";
+
+export type ReconcileStatus = {
+  ran_at: string | null;
+  ok: boolean;
+  orphaned_in_incus: { name: string; status: string }[];
+  orphaned_in_d1: { environment_id: string; name: string }[];
+};

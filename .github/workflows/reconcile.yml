@@ -1,0 +1,55 @@
+name: Reconcile
+
+# Detects drift between D1 (what the platform believes exists) and Incus
+# (what's actually there) -- e.g. tofu destroy partially failed and left a
+# container running, or someone ran `incus delete` by hand outside the
+# platform. Detection only. Nothing is deleted automatically; findings go
+# to the audit log and the dashboard, a human decides what to do.
+#
+# Runs on the self-hosted runner because the control plane (a Cloudflare
+# Worker) has no direct network path to the Incus API -- only the runner
+# does.
+
+on:
+  schedule:
+    - cron: '17 * * * *'   # hourly, offset from :00 to avoid piling up with other jobs
+  workflow_dispatch: {}
+
+jobs:
+  reconcile:
+    runs-on: [self-hosted, incus-host]
+    steps:
+      - name: List Incus instances
+        id: list
+        run: |
+          INSTANCES=$(incus list --format json | jq -c '[.[] | {name: .name, status: .status}]')
+          echo "count=$(echo "$INSTANCES" | jq 'length')" >> "$GITHUB_OUTPUT"
+          echo "$INSTANCES" > instances.json
+
+      - name: Report to control plane
+        id: report
+        run: |
+          RESULT=$(curl -sf -X POST "${{ secrets.CONTROL_PLANE_URL }}/api/reconcile" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CALLBACK_TOKEN }}" \
+            --data "{\"instances\": $(cat instances.json)}")
+
+          echo "$RESULT" | jq .
+
+          OK=$(echo "$RESULT" | jq -r '.ok')
+          echo "ok=$OK" >> "$GITHUB_OUTPUT"
+
+          ORPHANED_INCUS=$(echo "$RESULT" | jq -c '.orphaned_in_incus')
+          ORPHANED_D1=$(echo "$RESULT" | jq -c '.orphaned_in_d1')
+          echo "orphaned_incus=$ORPHANED_INCUS" >> "$GITHUB_OUTPUT"
+          echo "orphaned_d1=$ORPHANED_D1" >> "$GITHUB_OUTPUT"
+
+      - name: Annotate findings
+        if: steps.report.outputs.ok == 'false'
+        run: |
+          echo "::warning::Reconcile found drift between D1 and Incus"
+          echo "Orphaned in Incus (exists on the host, not tracked in D1):"
+          echo '${{ steps.report.outputs.orphaned_incus }}' | jq .
+          echo "Orphaned in D1 (D1 thinks it's running, no matching Incus instance):"
+          echo '${{ steps.report.outputs.orphaned_d1 }}' | jq .
+          echo "Nothing was deleted automatically -- review and act manually."
