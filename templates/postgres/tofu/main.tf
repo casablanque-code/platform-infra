@@ -20,7 +20,7 @@ variable "environment_name" {
 }
 variable "image" {
   type    = string
-  default = "ubuntu/22.04/cloud"
+  default = "images:ubuntu/22.04/cloud"
 }
 variable "cpu" {
   type    = number
