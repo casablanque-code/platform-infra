@@ -130,8 +130,8 @@ REPOEOF
     $SUDO incus config set core.https_address ":8443"
 
     log "Generating trust token..."
-    INCUS_TOKEN=$($SUDO incus config trust add --name platform --quiet 2>/dev/null \
-      || $SUDO incus config trust add --name "platform-$(date +%s)" --quiet)
+    INCUS_TOKEN=$($SUDO incus config trust add platform --quiet 2>/dev/null \
+      || $SUDO incus config trust add "platform-$(date +%s)" --quiet)
     INCUS_ADDR="https://127.0.0.1:8443"
 
     ok "Incus ready at $INCUS_ADDR"

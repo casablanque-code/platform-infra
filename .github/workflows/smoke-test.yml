@@ -67,7 +67,7 @@ jobs:
         run: |
           sudo incus admin init --minimal
           sudo incus config set core.https_address ":8443"
-          TOKEN=$(sudo incus config trust add --name smoke-test --quiet)
+          TOKEN=$(sudo incus config trust add smoke-test --quiet)
           echo "INCUS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
           # Runner user needs incus-admin group membership to use the CLI
           # without sudo for the rest of the job

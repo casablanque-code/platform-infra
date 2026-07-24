@@ -49,7 +49,7 @@ secrets:
 #
 # If you already have Incus running elsewhere, fill in remote_addr and
 # token instead. Get the token with:
-#   incus config trust add --name platform
+#   incus config trust add platform
 
 incus:
   remote_addr: ""    # blank = auto-install locally. Or e.g. https://192.168.1.10:8443

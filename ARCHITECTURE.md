@@ -155,7 +155,7 @@ is almost always your fork/clone of this exact repo.
 (HTTPS API, trust token) automatically. If you already have Incus
 running somewhere — another box on your LAN, a dedicated server — fill
 in its address and a trust token instead
-(`incus config trust add --name platform` on that machine) and `setup.sh`
+(`incus config trust add platform` on that machine) and `setup.sh`
 skips installation entirely and just uses it. Same mechanism either way:
 this section is "how do I reach the Incus API", nothing more.
 
