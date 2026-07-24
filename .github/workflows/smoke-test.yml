@@ -9,9 +9,10 @@ name: Smoke Test (Incus)
 # against a real Incus container. The dispatch plumbing in provision.yml is
 # comparatively simple curl calls and lower risk; this covers what isn't.
 #
-# No secrets required -- uses local Terraform state (tofu init -backend=false)
-# and a fresh Incus install on the runner itself. Safe to run on PRs from
-# forks.
+# No secrets required -- uses local Terraform state for this run (the s3
+# backend block is swapped to local in this throwaway checkout only, see
+# the "Use local state backend" step) and a fresh Incus install on the
+# runner itself. Safe to run on PRs from forks.
 
 on:
   push:
@@ -89,9 +90,23 @@ jobs:
             > terraform.tfvars.json
           jq 'del(.incus_token)' terraform.tfvars.json
 
-      - name: tofu init (local state, no R2 needed)
+      - name: Use local state backend for this test run
         working-directory: templates/${{ matrix.template }}/tofu
-        run: sg incus-admin -c "tofu init -backend=false -input=false"
+        run: |
+          # main.tf declares `backend "s3" {}` for the real R2-backed workflow.
+          # `tofu init -backend=false` does NOT reliably suppress a declared
+          # remote backend across separate init+apply steps -- this is a
+          # known, currently-open OpenTofu limitation (opentofu/opentofu#3673):
+          # init caches which backend it was actually configured against, and
+          # a mismatch against the backend block still declared in code makes
+          # apply demand reinitialization even though nothing "changed".
+          # Swapping the block to local state, only in this throwaway CI
+          # checkout, sidesteps the whole issue cleanly.
+          sed -i 's/backend "s3" {}/backend "local" {}/' main.tf
+
+      - name: tofu init
+        working-directory: templates/${{ matrix.template }}/tofu
+        run: sg incus-admin -c "tofu init -reconfigure -input=false"
 
       - name: tofu apply
         working-directory: templates/${{ matrix.template }}/tofu
