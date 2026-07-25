@@ -116,14 +116,25 @@ jobs:
         id: outputs
         working-directory: templates/${{ matrix.template }}/tofu
         run: |
-          sg incus-admin -c "tofu output -json" > outputs.json
+          # wait_for_network on the resource should mean the IP is already
+          # populated by the time apply finishes, but as defense in depth,
+          # retry a few times (refreshing state) before giving up -- cheap
+          # insurance against any timing edge case.
+          PUBLIC_IP=""
+          for i in $(seq 1 6); do
+            sg incus-admin -c "tofu output -json" > outputs.json
+            PUBLIC_IP=$(jq -r '.public_ip.value // empty' outputs.json)
+            [ -n "$PUBLIC_IP" ] && break
+            echo "public_ip not yet available (attempt $i/6), refreshing and retrying in 5s..."
+            sleep 5
+            sg incus-admin -c "tofu apply -auto-approve -refresh-only" > /dev/null
+          done
 
-          PUBLIC_IP=$(jq -r '.public_ip.value // empty' outputs.json)
           SSH_USER=$(jq -r '.ssh_user.value // "ubuntu"' outputs.json)
           SSH_PORT=$(jq -r '.ssh_port.value // "22"' outputs.json)
 
           if [ -z "$PUBLIC_IP" ]; then
-            echo "::error::No public_ip in tofu output -- module didn't produce an IP"
+            echo "::error::No public_ip in tofu output after retries -- module didn't produce an IP"
             exit 1
           fi
 

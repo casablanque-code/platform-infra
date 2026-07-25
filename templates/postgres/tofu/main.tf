@@ -69,6 +69,9 @@ resource "incus_instance" "node" {
   project = var.incus_project
   running = true
 
+  # See docker-host/tofu/main.tf for why this matters.
+  wait_for_network = true
+
   device {
     name = "root"
     type = "disk"
