@@ -88,7 +88,8 @@ resource "incus_instance" "node" {
       ssh_authorized_keys:
         - ${trimspace(tls_private_key.env_key.public_key_openssh)}
       runcmd:
-        - for i in $(seq 1 5); do apt-get update -qq && apt-get install -y -qq --option Acquire::Retries=3 openssh-server postgresql-${var.pg_version} && break || sleep 15; done
+        - sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list
+        - for i in $(seq 1 5); do apt-get update -qq -o Acquire::ForceIPv4=true && apt-get install -y -qq -o Acquire::ForceIPv4=true --option Acquire::Retries=3 openssh-server postgresql-${var.pg_version} && break || sleep 15; done
         - systemctl enable ssh
         - systemctl start ssh
         - systemctl enable postgresql
