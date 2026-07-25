@@ -161,6 +161,16 @@ jobs:
       # exercises cloud-init, the bootstrap scripts, and Docker/PostgreSQL
       # against the real image -- it just doesn't route through the one
       # network hop that's a GH-runner-specific artifact.
+      - name: Wait for cloud-init to finish
+        run: |
+          # The previous network-based "Wait for SSH" step incidentally gave
+          # cloud-init several minutes to finish applying user-data before
+          # anything checked on it. Switching to incus exec removed that
+          # implicit wait -- this replaces it with the actual correct
+          # condition to wait for, rather than an arbitrary timeout.
+          sg incus-admin -c "timeout 120 incus exec ${{ steps.outputs.outputs.instance_name }} -- cloud-init status --wait" \
+            || echo "::warning::cloud-init reported a non-zero status or timed out after 120s -- continuing, next step will show if SSH/keys actually came up"
+
       - name: Verify SSH key was actually injected via cloud-init
         run: |
           sg incus-admin -c "incus exec ${{ steps.outputs.outputs.instance_name }} -- systemctl is-active ssh" \
