@@ -169,8 +169,8 @@ jobs:
           # anything checked on it. Switching to incus exec removed that
           # implicit wait -- this replaces it with the actual correct
           # condition to wait for, rather than an arbitrary timeout.
-          sg incus-admin -c "timeout 300 incus exec ${{ steps.outputs.outputs.instance_name }} -- cloud-init status --wait" \
-            || echo "::warning::cloud-init reported a non-zero status or timed out after 300s -- continuing, next step will show if SSH/keys actually came up"
+          sg incus-admin -c "timeout 600 incus exec ${{ steps.outputs.outputs.instance_name }} -- cloud-init status --wait" \
+            || echo "::warning::cloud-init reported a non-zero status or timed out after 600s -- continuing, next step will show if SSH/keys actually came up"
 
       - name: Diagnostics -- what actually happened in cloud-init
         if: always()

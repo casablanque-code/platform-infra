@@ -87,11 +87,8 @@ resource "incus_instance" "node" {
       #cloud-config
       ssh_authorized_keys:
         - ${trimspace(tls_private_key.env_key.public_key_openssh)}
-      package_update: true
-      packages:
-        - openssh-server
-        - postgresql-${var.pg_version}
       runcmd:
+        - for i in $(seq 1 5); do apt-get update -qq && apt-get install -y -qq --option Acquire::Retries=3 openssh-server postgresql-${var.pg_version} && break || sleep 15; done
         - systemctl enable ssh
         - systemctl start ssh
         - systemctl enable postgresql
