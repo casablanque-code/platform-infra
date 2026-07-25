@@ -89,8 +89,11 @@ resource "incus_instance" "node" {
         - ${trimspace(tls_private_key.env_key.public_key_openssh)}
       package_update: true
       packages:
+        - openssh-server
         - postgresql-${var.pg_version}
       runcmd:
+        - systemctl enable ssh
+        - systemctl start ssh
         - systemctl enable postgresql
         - systemctl start postgresql
         - sudo -u postgres psql -c "ALTER USER postgres PASSWORD '${random_password.db_password.result}';"

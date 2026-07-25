@@ -77,6 +77,12 @@ resource "incus_instance" "node" {
       #cloud-config
       ssh_authorized_keys:
         - ${trimspace(tls_private_key.env_key.public_key_openssh)}
+      package_update: true
+      packages:
+        - openssh-server
+      runcmd:
+        - systemctl enable ssh
+        - systemctl start ssh
     CLOUDINIT
   }
 }
