@@ -116,10 +116,12 @@ jobs:
         id: outputs
         working-directory: templates/${{ matrix.template }}/tofu
         run: |
-          # wait_for_network on the resource should mean the IP is already
-          # populated by the time apply finishes, but as defense in depth,
-          # retry a few times (refreshing state) before giving up -- cheap
-          # insurance against any timing edge case.
+          # incus_instance can finish "creating" before it's actually gotten a
+          # DHCP lease -- public_ip can read back empty right after apply.
+          # (wait_for_network would be the obvious fix, but it isn't present
+          # on the current provider version despite older docs/issues
+          # referencing it -- so this retry loop is the actual mechanism,
+          # not a backup for one.) Retry a few times before giving up.
           PUBLIC_IP=""
           for i in $(seq 1 6); do
             sg incus-admin -c "tofu output -json" > outputs.json

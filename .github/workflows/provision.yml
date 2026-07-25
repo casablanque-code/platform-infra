@@ -107,9 +107,20 @@ jobs:
         id: outputs
         working-directory: ${{ steps.runtime.outputs.module_path }}
         run: |
-          tofu output -json > outputs.json
+          # The instance can finish "creating" before it's actually gotten a
+          # DHCP lease -- public_ip can read back empty immediately after
+          # apply. Retry a few times, refreshing state between attempts,
+          # before giving up.
+          PUBLIC_IP=""
+          for i in $(seq 1 6); do
+            tofu output -json > outputs.json
+            PUBLIC_IP=$(jq -r '.public_ip.value // empty' outputs.json)
+            [ -n "$PUBLIC_IP" ] && break
+            echo "public_ip not yet available (attempt $i/6), refreshing and retrying in 5s..."
+            sleep 5
+            tofu apply -auto-approve -refresh-only > /dev/null
+          done
 
-          PUBLIC_IP=$(jq -r '.public_ip.value // empty' outputs.json)
           SSH_PORT=$(jq -r '.ssh_port.value // "22"' outputs.json)
           SSH_USER=$(jq -r '.ssh_user.value // "ubuntu"' outputs.json)
           SSH_PRIVATE_KEY=$(jq -r '.ssh_private_key.value // empty' outputs.json)

@@ -59,12 +59,6 @@ resource "incus_instance" "node" {
   project = var.incus_project
   running = true
 
-  # Without this, Terraform considers the instance "created" as soon as it
-  # starts, before it's actually gotten a DHCP lease -- ipv4_address in the
-  # outputs can come back empty, or SSH isn't reachable yet even though
-  # apply already finished.
-  wait_for_network = true
-
   device {
     name = "root"
     type = "disk"
